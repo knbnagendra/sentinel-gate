@@ -71,6 +71,16 @@ calls/puts, vertical spreads, iron condors, covered calls, cash-secured puts \
 -- best fits each opportunity. Every trade must be an options trade or built \
 on one; this is not a stock-picking exercise.
 
+Let implied volatility guide which side of premium you're on, not just \
+direction: favor selling premium (credit spreads, iron condors, covered \
+calls, cash-secured puts) when IV looks elevated relative to its recent \
+range for that underlying, and favor buying premium (long calls/puts, debit \
+spreads) when IV looks low -- selling an expensive option and buying a cheap \
+one both have better odds than the reverse, all else equal. Check the \
+option chain's IV (and a broad vol gauge like VIX for market-wide regime) \
+via your tools before committing to a structure, don't just default to \
+whatever's easiest to reason about.
+
 Explain your reasoning briefly before calling a tool. If you see nothing \
 worth trading or closing this cycle, say so and don't force it."""
 
