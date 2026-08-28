@@ -32,7 +32,6 @@ def market_hours_now() -> datetime:
 
 def base_config() -> RiskConfig:
     return RiskConfig(
-        daily_loss_limit_pct=5,
         max_position_pct=10,
         max_concurrent_positions=6,
         cooldown_minutes=30,
@@ -82,18 +81,13 @@ def test_blocks_missing_or_zero_max_loss():
     assert "max_loss" in decision.reason
 
 
-def test_daily_circuit_breaker_trips_on_loss_breach():
-    """Guards against a circuit breaker that exists conceptually but doesn't
-    actually stop new entries once the day has gone bad -- this must block,
-    not just warn."""
-    account = base_account(daily_pnl_pct=-6.0)  # breached the -5% limit
-    decision = evaluate_trade(base_proposal(), account, base_config(), {})
-    assert not decision.allowed
-    assert "circuit breaker" in decision.reason
-
-
-def test_circuit_breaker_does_not_trip_below_threshold():
-    account = base_account(daily_pnl_pct=-2.0)  # inside the -5% limit
+def test_no_daily_circuit_breaker_by_design():
+    """Deliberately removed: this is a paper account with no real capital
+    at risk, and the goal is maximizing trade volume/P&L opportunity over
+    the competition week -- a halt-all-new-entries gate works against that
+    with no offsetting real-money protection to justify it. A large daily
+    loss must NOT block further trades."""
+    account = base_account(daily_pnl_pct=-40.0)  # a large daily loss
     decision = evaluate_trade(base_proposal(), account, base_config(), {})
     assert decision.allowed
 
@@ -166,8 +160,12 @@ def test_is_market_hours_boundaries(when, expected):
     assert is_market_hours(when) is expected
 
 
-def _position(symbol="SPY", unrealized_plpc=0.0) -> dict:
-    return {"symbol": symbol, "unrealized_plpc": unrealized_plpc}
+def _position(symbol="SPY", unrealized_plpc=0.0, qty=2.0) -> dict:
+    # qty defaults to 2 (not Sentinel Gate's real 1-contract-per-leg norm)
+    # so existing partial-take-profit tests exercise the "fires" path;
+    # the qty=1 case (which can never satisfy a 50% partial close) has
+    # its own dedicated test below.
+    return {"symbol": symbol, "unrealized_plpc": unrealized_plpc, "qty": qty}
 
 
 def test_no_protective_exit_within_thresholds():
@@ -254,3 +252,20 @@ def test_partial_take_profit_skips_already_triggered_symbol():
     positions = [_position("SPY", unrealized_plpc=60.0)]
     exits = find_partial_take_profits(positions, config, already_triggered={"SPY"})
     assert exits == []
+
+
+def test_partial_take_profit_skips_single_contract_position():
+    """Confirmed live: Sentinel Gate always trades 1 contract per leg, and
+    50% of 1 rounds to 0 -- a close Alpaca will reject every time ('order
+    size of zero'). Without this check, the protective loop retry-storms
+    Alpaca every ~15s indefinitely since a failed close never gets added
+    to already_triggered. Must skip cleanly instead."""
+    config = base_config()
+    positions = [_position("SPY", unrealized_plpc=60.0, qty=1.0)]
+    assert find_partial_take_profits(positions, config, already_triggered=set()) == []
+
+
+def test_partial_take_profit_handles_missing_qty():
+    config = base_config()
+    positions = [{"symbol": "SPY", "unrealized_plpc": 60.0}]  # no qty key
+    assert find_partial_take_profits(positions, config, already_triggered=set()) == []

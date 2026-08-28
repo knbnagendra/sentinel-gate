@@ -62,19 +62,32 @@ anything else in the system was built.
 - **`max_loss` sanity check** -- must be a real, positive, finite number
   Claude calculated from the actual option premium/spread width. No trade
   gets through on an estimate or a missing figure.
-- **Daily loss circuit breaker** (`DAILY_LOSS_LIMIT_PCT`, default 5%) -- once
-  today's P&L hits the floor, no new entries until next session. Stops a bad
-  day from compounding into a worse one from an agent that doesn't feel
-  loss aversion.
-- **Max concurrent positions** (`MAX_CONCURRENT_POSITIONS`, default 6) --
+- **Max concurrent positions** (`MAX_CONCURRENT_POSITIONS`, default 20) --
   caps how many open bets exist at once, independent of how good any single
-  idea looks in isolation.
+  idea looks in isolation. Deliberately generous: this is a paper account
+  with no real capital at risk, and the goal is maximizing trade volume/P&L
+  over the week, not conserving positions for their own sake.
 - **Position sizing cap** (`MAX_POSITION_PCT`, default 10% of equity) --
   bounds any single trade's `max_loss` relative to account size, so one wrong
   idea can't be sized up into a large fraction of the account.
 - **Per-symbol/strategy cooldown** (`COOLDOWN_MINUTES`, default 30) -- once a
   `(symbol, strategy)` pair trades, it's locked out for the window. Stops the
   agent from re-entering the same idea cycle after cycle chasing a move.
+- **Code-enforced stop-loss/take-profit** (`STOP_LOSS_PCT`/`TAKE_PROFIT_PCT`,
+  plus a partial take-profit tier) -- runs on its own fast (~15s) loop,
+  decoupled from the 15-min reasoning cycle, since Alpaca doesn't support
+  OCO/bracket orders for options. This is what actually manages positions
+  out between reasoning turns, independent of Claude noticing.
+
+**Deliberately not a gate: a daily loss circuit breaker.** Early versions had
+one; it's removed. This is a paper account with no real capital at risk, and
+the competition scores trade volume/P&L over the week -- a gate that halts
+all new entries after a bad stretch protects capital that isn't actually at
+risk, at the direct cost of missing the rest of the week's opportunities. The
+structural safety gates above (defined-risk-only, leg/symbol validation,
+per-trade size cap) stay in place regardless; this is specifically about not
+stopping the agent from continuing to trade, not about loosening what counts
+as a safe trade.
 
 *TODO near deadline: a real example of each gate actually firing, pulled from
 `state/cycles.jsonl`.*

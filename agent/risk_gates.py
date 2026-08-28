@@ -38,7 +38,12 @@ DEFAULT_COOLDOWN_STATE_PATH = Path(__file__).resolve().parent.parent / "state" /
 
 @dataclass(frozen=True)
 class RiskConfig:
-    daily_loss_limit_pct: float
+    # No daily loss circuit breaker by design: this is a paper account with
+    # no real capital at risk, and the explicit goal is maximizing trade
+    # volume/P&L opportunity over the competition week -- a halt-all-new-
+    # entries gate works against that with no offsetting real-money
+    # protection to justify it. Structural safety (defined-risk-only,
+    # leg/symbol validation, per-trade size cap) is unaffected by this.
     max_position_pct: float
     max_concurrent_positions: int
     cooldown_minutes: int
@@ -59,9 +64,8 @@ class RiskConfig:
     @classmethod
     def from_env(cls) -> "RiskConfig":
         return cls(
-            daily_loss_limit_pct=float(os.environ.get("DAILY_LOSS_LIMIT_PCT", "5")),
             max_position_pct=float(os.environ.get("MAX_POSITION_PCT", "10")),
-            max_concurrent_positions=int(os.environ.get("MAX_CONCURRENT_POSITIONS", "6")),
+            max_concurrent_positions=int(os.environ.get("MAX_CONCURRENT_POSITIONS", "20")),
             cooldown_minutes=int(os.environ.get("COOLDOWN_MINUTES", "30")),
             stop_loss_pct=float(os.environ.get("STOP_LOSS_PCT", "-50")),
             take_profit_pct=float(os.environ.get("TAKE_PROFIT_PCT", "100")),
@@ -159,13 +163,6 @@ def evaluate_trade(
     if proposal.max_loss is None or proposal.max_loss <= 0:
         return RiskDecision(False, "max_loss must be a known, positive, finite dollar amount")
 
-    if account.daily_pnl_pct <= -abs(config.daily_loss_limit_pct):
-        return RiskDecision(
-            False,
-            f"daily circuit breaker tripped ({account.daily_pnl_pct:.2f}% <= "
-            f"-{config.daily_loss_limit_pct}%), no new entries until next session",
-        )
-
     if account.open_positions_count >= config.max_concurrent_positions:
         return RiskDecision(
             False,
@@ -257,6 +254,15 @@ def find_partial_take_profits(
         if plpc is None or symbol in already_triggered:
             continue
         if config.partial_take_profit_pct <= plpc < config.take_profit_pct:
+            # Alpaca's percentage-based close requires a whole-share result.
+            # Every position here is 1 contract per leg, so 50% of 1 rounds
+            # to 0 -- a request Alpaca will reject every time. Confirmed
+            # live: this fired every ~15s for 19 minutes straight against a
+            # single-contract position before anyone noticed. Skip cleanly
+            # rather than retry-storm a request that can never succeed.
+            qty = abs(position.get("qty") or 0)
+            if int(qty * config.partial_take_profit_close_fraction / 100) < 1:
+                continue
             exits.append(
                 PartialExit(
                     symbol=symbol,

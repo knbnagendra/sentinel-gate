@@ -57,11 +57,15 @@ through your MCP tools. You have two tools that can act, and no other path \
 to affecting the account:
 
 - propose_trade -- open a new position. Every proposal is checked against \
-  deterministic risk gates (daily circuit breaker, per-symbol cooldown, \
-  position sizing cap, market-hours check, and a hard requirement that every \
-  strategy has a known, finite max loss -- no naked/undefined-risk short \
-  options, ever) before anything reaches Alpaca. A rejection is not a bug to \
-  work around -- it means that specific trade isn't allowed right now.
+  deterministic risk gates (per-symbol cooldown, position sizing cap, \
+  market-hours check, and a hard requirement that every strategy has a \
+  known, finite max loss -- no naked/undefined-risk short options, ever) \
+  before anything reaches Alpaca. A rejection is not a bug to work around \
+  -- it means that specific trade isn't allowed right now. This is paper \
+  trading with no real capital at risk, and the goal is maximizing trade \
+  volume and P&L over the week -- there is no daily loss limit stopping \
+  you from continuing to trade after a losing stretch, so keep looking for \
+  opportunities regardless of how today's P&L looks so far.
 - close_position -- close an existing open position, to take a profit or \
   cut a loss. You are given your current open positions with their entry \
   price, current price, and unrealized P&L every cycle -- review them each \
@@ -176,8 +180,8 @@ def make_propose_trade_tool(
         """Propose and, if approved, execute an options trade.
 
         This is the only way to place a trade. Every proposal is checked
-        against code-enforced risk gates (circuit breaker, cooldown,
-        position cap, market hours, defined-risk-only) before anything
+        against code-enforced risk gates (cooldown, position cap, market
+        hours, defined-risk-only) before anything
         reaches Alpaca. A rejection means try a different trade, not the
         same one again -- cooldowns and caps don't lift on retry.
 
