@@ -62,3 +62,20 @@ def test_read_cycles_returns_newest_first(tmp_path):
 
 def test_read_cycles_missing_file_returns_empty():
     assert read_cycles(path=Path("/nonexistent/path/cycles.jsonl")) == []
+
+
+def test_read_cycles_skips_corrupted_line(tmp_path):
+    """cycles.jsonl is written concurrently by both the reasoning loop and
+    the protective loop from separate threads -- a rare interleaved write
+    corrupting one line must not take down the entire dashboard."""
+    path = tmp_path / "cycles.jsonl"
+    log_cycle_failure(_account(), "good entry one", path=path)
+    with path.open("a") as f:
+        f.write("{not valid json at all\n")
+    log_cycle_failure(_account(), "good entry two", path=path)
+
+    entries = read_cycles(path=path)
+    assert len(entries) == 2
+    reasonings = {e["reasoning"] for e in entries}
+    assert any("good entry one" in r for r in reasonings)
+    assert any("good entry two" in r for r in reasonings)

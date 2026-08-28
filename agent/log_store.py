@@ -82,9 +82,21 @@ def log_cycle_failure(
 
 
 def read_cycles(path: Path = LOG_PATH, limit: int = 50) -> list[dict]:
+    """Reads the most recent cycle entries. Skips (rather than crashes on)
+    any line that fails to parse -- this file is written concurrently by
+    both the reasoning loop and the protective loop from separate threads,
+    so a rare interleaved write corrupting one line must not take down the
+    entire dashboard until someone manually edits the file."""
     if not path.exists():
         return []
     lines = path.read_text().strip().splitlines()
-    entries = [json.loads(line) for line in lines[-limit:] if line.strip()]
+    entries = []
+    for line in lines[-limit:]:
+        if not line.strip():
+            continue
+        try:
+            entries.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
     entries.reverse()
     return entries

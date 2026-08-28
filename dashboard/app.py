@@ -97,7 +97,8 @@ else:
             "Market Value": "${:,.2f}",
             "Unrealized P&L ($)": "${:,.2f}",
             "Unrealized P&L (%)": "{:+.2f}%",
-        }
+        },
+        na_rep="N/A",
     )
     st.dataframe(styled, width="stretch", hide_index=True)
 

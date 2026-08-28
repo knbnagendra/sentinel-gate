@@ -85,6 +85,19 @@ Explain your reasoning briefly before calling a tool. If you see nothing \
 worth trading or closing this cycle, say so and don't force it."""
 
 
+def _fmt_money(value: float | None) -> str:
+    """Alpaca can return None for current_price/unrealized_pl/unrealized_plpc
+    when a fresh quote isn't available yet (e.g. right after opening a
+    position, or a thin chain) -- formatting that directly with :,.2f
+    raises and would crash the whole cycle before Claude even sees any
+    positions, not just skip the one field."""
+    return f"${value:,.2f}" if value is not None else "N/A"
+
+
+def _fmt_pct(value: float | None) -> str:
+    return f"{value:+.2f}%" if value is not None else "N/A"
+
+
 def build_alpaca_mcp_params() -> StdioServerParameters:
     return StdioServerParameters(
         command="uvx",
@@ -304,10 +317,10 @@ async def run_cycle(
             if positions:
                 positions_lines = "\n".join(
                     f"  {p['symbol']}: {p['side']} qty={p['qty']} "
-                    f"entry=${p['avg_entry_price']:,.2f} "
-                    f"current=${p['current_price']:,.2f} "
-                    f"unrealized_pl=${p['unrealized_pl']:,.2f} "
-                    f"({p['unrealized_plpc']:+.2f}%)"
+                    f"entry={_fmt_money(p['avg_entry_price'])} "
+                    f"current={_fmt_money(p['current_price'])} "
+                    f"unrealized_pl={_fmt_money(p['unrealized_pl'])} "
+                    f"({_fmt_pct(p['unrealized_plpc'])})"
                     for p in positions
                 )
             else:
