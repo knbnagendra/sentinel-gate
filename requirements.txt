@@ -5,3 +5,4 @@ streamlit>=1.38
 python-dotenv>=1.0
 pytest>=8.0
 tzdata>=2024.1
+uv>=0.5

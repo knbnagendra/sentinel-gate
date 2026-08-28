@@ -15,6 +15,8 @@ risk gates in risk_gates.py before anything reaches Alpaca's Trading API.
 from __future__ import annotations
 
 import os
+import shutil
+import sys
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -98,9 +100,28 @@ def _fmt_pct(value: float | None) -> str:
     return f"{value:+.2f}%" if value is not None else "N/A"
 
 
+def _resolve_uvx() -> str:
+    """`uvx` isn't guaranteed to be on PATH -- a systemd service launched
+    via the venv's python directly (ExecStart=.../.venv/bin/python, no
+    `source activate`) sees systemd's default PATH, not the venv's
+    bin/Scripts directory, even with `uv` installed into that venv.
+    Confirmed live: the first real cycle at market open crashed with
+    FileNotFoundError('uvx') for exactly this reason. Fall back to
+    resolving it as a sibling of the running interpreter, which is where
+    pip installs it when `uv` is a dependency of this project's venv."""
+    found = shutil.which("uvx")
+    if found:
+        return found
+    exe_name = "uvx.exe" if sys.platform == "win32" else "uvx"
+    candidate = Path(sys.executable).parent / exe_name
+    if candidate.exists():
+        return str(candidate)
+    return "uvx"  # last resort -- fails loudly with a clear FileNotFoundError
+
+
 def build_alpaca_mcp_params() -> StdioServerParameters:
     return StdioServerParameters(
-        command="uvx",
+        command=_resolve_uvx(),
         args=["alpaca-mcp-server"],
         env={
             "ALPACA_API_KEY": os.environ["ALPACA_API_KEY"],
