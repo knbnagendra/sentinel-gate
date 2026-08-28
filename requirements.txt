@@ -1,0 +1,7 @@
+alpaca-py>=0.33
+anthropic[mcp]>=0.116
+mcp>=1.2
+streamlit>=1.38
+python-dotenv>=1.0
+pytest>=8.0
+tzdata>=2024.1
