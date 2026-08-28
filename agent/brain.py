@@ -369,6 +369,14 @@ async def run_cycle(
                 system=SYSTEM_PROMPT,
                 tools=[*data_tools, propose_trade, close_position],
                 messages=[{"role": "user", "content": user_prompt}],
+                # Auto-caches the last cacheable block (system + full tool
+                # list -- 47 MCP tools + propose_trade + close_position,
+                # identical on every internal turn this cycle makes). A
+                # cycle with several tool calls resends that same prefix on
+                # every internal request; this is a real cost cut with zero
+                # behavior change. Confirmed supported in the installed SDK
+                # via tool_runner's cache_control param.
+                cache_control={"type": "ephemeral"},
             )
 
             transcript = []
