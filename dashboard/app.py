@@ -154,8 +154,8 @@ for cycle in cycles:
                 badge_col, detail_col = st.columns([1, 5])
                 with badge_col:
                     if d["gate_allowed"]:
-                        st.badge("EXECUTED", color="green", icon=":white_check_mark:")
+                        st.badge("EXECUTED", color="green", icon="✅")
                     else:
-                        st.badge("REJECTED", color="red", icon=":no_entry:")
+                        st.badge("REJECTED", color="red", icon="⛔")
                 with detail_col:
                     st.write(f"**{d['symbol']} -- {d['strategy']}**: {d['gate_reason']}")
