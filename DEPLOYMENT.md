@@ -79,7 +79,7 @@ will work.
    is just repointing the symlink + restarting the services, not re-copying
    files.
 4. Two systemd services, `WorkingDirectory=/home/<user>/sentinel-gate`,
-   `Restart=on-failure`, `RestartSec=10`:
+   `Restart=on-failure`, `RestartSec=10`, **and `Environment=PYTHONUNBUFFERED=1`**:
    - `sentinel-gate-loop.service` -- `ExecStart=.../.venv/bin/python -m agent.loop`
    - `sentinel-gate-dashboard.service` -- `ExecStart=.../.venv/bin/streamlit run dashboard/app.py --server.port 8501 --server.address 0.0.0.0 --server.headless true`
 
@@ -87,6 +87,16 @@ will work.
    `dashboard/app.py` reads the `.env` symlink directly at process start,
    which is what makes the symlink-swap approach work without editing the
    unit files.
+
+   **Gotcha, caught live:** without `PYTHONUNBUFFERED=1`, Python
+   block-buffers stdout when it isn't attached to a TTY (exactly the case
+   under systemd) -- `print()` output can sit in the buffer indefinitely
+   instead of reaching `journalctl` in real time, giving zero live
+   visibility into what the loop is doing until something crashes hard
+   enough to force a flush. Confirmed via `journalctl -u sentinel-gate-loop`
+   showing nothing but service start/stop lines -- not even the
+   every-15-second "outside market hours, skipping" print -- until this was
+   added.
 5. Open the dashboard's port on **both** firewalls -- this host has two
    independent layers and both blocked it by default:
    ```
