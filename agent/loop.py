@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -23,7 +24,7 @@ load_dotenv()
 from agent.brain import run_cycle
 from agent.context import get_account_state, get_open_positions
 from agent.execute import close_position
-from agent.log_store import log_auto_close
+from agent.log_store import log_auto_close, log_cycle_failure
 from agent.risk_gates import (
     AccountState,
     RiskConfig,
@@ -91,7 +92,7 @@ def _close_protective_exits_sync(account: AccountState, positions: list[dict]) -
             record["gate_allowed"] = True
             record["execution_result"] = result
             print(f"[protective exit] {finding.symbol}: {finding.reason} -> {result}")
-        except ValueError as exc:
+        except Exception as exc:  # broad on purpose -- every attempt must be logged, no exceptions
             record["gate_allowed"] = False
             record["gate_reason"] = f"{finding.reason}, but close failed: {exc}"
             print(f"[protective exit] {finding.symbol}: close FAILED -- {exc}")
@@ -114,7 +115,7 @@ def _close_protective_exits_sync(account: AccountState, positions: list[dict]) -
             record["execution_result"] = result
             triggered.add(finding.symbol)
             print(f"[partial take-profit] {finding.symbol}: {finding.reason} -> {result}")
-        except ValueError as exc:
+        except Exception as exc:  # broad on purpose -- every attempt must be logged, no exceptions
             record["gate_allowed"] = False
             record["gate_reason"] = f"{finding.reason}, but close failed: {exc}"
             print(f"[partial take-profit] {finding.symbol}: close FAILED -- {exc}")
@@ -138,12 +139,18 @@ async def protective_loop(check_seconds: int) -> None:
     while True:
         now = datetime.now(timezone.utc)
         if is_market_hours(now):
+            account = None
             try:
                 account = await asyncio.to_thread(get_account_state)
                 positions = await asyncio.to_thread(get_open_positions)
                 await asyncio.to_thread(_close_protective_exits_sync, account, positions)
             except Exception as exc:  # keep this loop alive across a bad check
+                tb = traceback.format_exc()
                 print(f"[{now.isoformat()}] protective check failed: {exc}")
+                print(tb)
+                await asyncio.to_thread(
+                    log_cycle_failure, account, f"protective check failed: {exc}\n{tb}"
+                )
         await asyncio.sleep(check_seconds)
 
 
@@ -154,13 +161,17 @@ async def reasoning_loop(cycle_minutes: int, watchlist: list[str]) -> None:
         now = datetime.now(timezone.utc)
         if is_market_hours(now):
             print(f"[{now.isoformat()}] cycle starting")
+            account = None
             try:
                 account = await asyncio.to_thread(get_account_state)
                 positions = await asyncio.to_thread(get_open_positions)
                 await run_cycle(account, watchlist, COOLDOWN_PATH, positions)
                 print(f"[{now.isoformat()}] cycle complete")
             except Exception as exc:  # keep the loop alive across a bad cycle
+                tb = traceback.format_exc()
                 print(f"[{now.isoformat()}] cycle failed: {exc}")
+                print(tb)
+                await asyncio.to_thread(log_cycle_failure, account, f"cycle failed: {exc}\n{tb}")
         else:
             print(f"[{now.isoformat()}] outside market hours, skipping")
         await asyncio.sleep(cycle_minutes * 60)

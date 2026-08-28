@@ -157,22 +157,33 @@ def make_propose_trade_tool(
 
         try:
             result = execute_trade(proposal, legs)
-        except ValueError as exc:
-            # The gates approved the strategy/max_loss, but the legs string
-            # didn't actually match that strategy (or covered_call/
-            # cash_secured_put isn't actually covered) -- reject rather than
-            # let a malformed leg spec crash the whole cycle.
+        except Exception as exc:
+            # Broad on purpose: the gates approved the strategy/max_loss,
+            # but anything from here on (malformed legs, an Alpaca API
+            # error, a bug) must become a REJECTED record, never an
+            # unhandled exception that crashes the whole cycle silently.
             record["gate_allowed"] = False
             record["gate_reason"] = f"execution validation failed: {exc}"
             decisions.append(record)
             return f"REJECTED: {exc}"
 
-        mark_cooldown(cooldown_data, cooldown_key(symbol, strategy), now)
-        save_cooldowns(cooldown_data, cooldown_path)
-        positions_opened += 1
-
+        # The order is now live on Alpaca -- record that immediately,
+        # before any further bookkeeping, so a failure in cooldown
+        # persistence below can never leave an executed trade unlogged.
+        # No orphan executions: if it happened, it's in decisions.
         record["execution_result"] = result
         decisions.append(record)
+
+        try:
+            mark_cooldown(cooldown_data, cooldown_key(symbol, strategy), now)
+            save_cooldowns(cooldown_data, cooldown_path)
+            positions_opened += 1
+        except Exception as exc:
+            print(
+                f"WARNING: {symbol}/{strategy} executed but cooldown "
+                f"persistence failed: {exc} (trade is still recorded above)"
+            )
+
         return f"EXECUTED: {result}"
 
     return propose_trade
@@ -213,7 +224,7 @@ def make_close_position_tool(decisions: list[dict]):
 
         try:
             result = execute_close_position(symbol)
-        except ValueError as exc:
+        except Exception as exc:  # broad on purpose -- see propose_trade above
             record["gate_allowed"] = False
             record["gate_reason"] = f"close failed: {exc}"
             decisions.append(record)

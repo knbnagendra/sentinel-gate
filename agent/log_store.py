@@ -61,6 +61,26 @@ def log_auto_close(
         f.write(json.dumps(entry, default=str) + "\n")
 
 
+def log_cycle_failure(
+    account: AccountState | None,
+    error: str,
+    path: Path = LOG_PATH,
+) -> None:
+    """Records a reasoning-cycle or protective-check crash in the same
+    audit trail as everything else -- no failure should be visible only in
+    journalctl and nowhere else. `account` may be None if the failure
+    happened before an account snapshot could even be fetched."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    entry = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "account": asdict(account) if account is not None else None,
+        "reasoning": f"CYCLE FAILED: {error}",
+        "decisions": [],
+    }
+    with path.open("a") as f:
+        f.write(json.dumps(entry, default=str) + "\n")
+
+
 def read_cycles(path: Path = LOG_PATH, limit: int = 50) -> list[dict]:
     if not path.exists():
         return []

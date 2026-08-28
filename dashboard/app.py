@@ -136,14 +136,18 @@ if not cycles:
     st.write("No cycles logged yet.")
 
 for cycle in cycles:
+    is_failure = cycle["reasoning"].startswith("CYCLE FAILED:")
     with st.container(border=True):
         st.subheader(cycle["timestamp"])
-        if cycle["reasoning"]:
+        if is_failure:
+            st.error(cycle["reasoning"])
+        elif cycle["reasoning"]:
             st.write(cycle["reasoning"])
 
         decisions = cycle["decisions"]
         if not decisions:
-            st.caption("no trade proposed")
+            if not is_failure:
+                st.caption("no trade proposed")
         else:
             for d in decisions:
                 badge_col, detail_col = st.columns([1, 5])
