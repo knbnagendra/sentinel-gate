@@ -42,6 +42,25 @@ def log_cycle(
         f.write(json.dumps(entry, default=str) + "\n")
 
 
+def log_auto_close(
+    account: AccountState,
+    decisions: list[dict],
+    path: Path = LOG_PATH,
+) -> None:
+    """Records automatic stop-loss/take-profit closes -- same log, same
+    shape read_cycles/the dashboard already expect, but with no Claude
+    transcript since these run independent of any reasoning turn."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    entry = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "account": asdict(account),
+        "reasoning": "Automatic stop-loss/take-profit check (code-enforced, no Claude reasoning this pass).",
+        "decisions": decisions,
+    }
+    with path.open("a") as f:
+        f.write(json.dumps(entry, default=str) + "\n")
+
+
 def read_cycles(path: Path = LOG_PATH, limit: int = 50) -> list[dict]:
     if not path.exists():
         return []

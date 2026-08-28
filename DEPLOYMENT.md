@@ -25,15 +25,18 @@ no state syncing between machines.
       wasn't compatible with `AsyncAnthropic`'s tool runner -- see git log).
 - [x] `LICENSE` (MIT) added.
 - [x] `.gitignore` covers `.env`, `.env.test`, and `state/`.
-- [ ] Dashboard rewritten in Streamlit (currently FastAPI in
-      `dashboard/app.py` -- Streamlit chosen per the hackathon's suggested
-      demo platforms; self-hosted rather than Streamlit Community Cloud, so
-      it can read `state/` directly and isn't subject to Community Cloud's
-      idle-sleep behavior).
-- [ ] Code pushed to a public GitHub repository.
-- [ ] Isolated deployment directory + venv on the target host.
-- [ ] systemd services for the loop and the dashboard.
-- [ ] Firewall rule opened for the dashboard's port.
+- [x] Dashboard rewritten in Streamlit (self-hosted, not Streamlit Community
+      Cloud, so it reads `state/` directly and isn't subject to Community
+      Cloud's idle-sleep behavior).
+- [x] Code pushed to a public GitHub repository:
+      https://github.com/knbnagendra/sentinel-gate
+- [x] Isolated deployment directory + venv on the target host
+      (`~/sentinel-gate`, separate from the host's other project).
+- [x] systemd services for the loop and the dashboard, live.
+- [x] Firewall rules opened for the dashboard's port (both GCP's cloud
+      firewall *and* the host's own `ufw` -- both had to be opened
+      separately, see Operational notes).
+- [x] Dashboard verified reachable externally.
 - [ ] End-to-end cycle verified against a throwaway test account
       (`.env.test`) rather than the hackathon account, so the hackathon
       account's history stays clean until the real run.
@@ -54,36 +57,81 @@ SSH-keys command, and the login username OS Login assigns may not match your
 local username. Confirm both before assuming a plain `ssh -i key user@ip`
 will work.
 
-## Deployment steps
+## Deployment steps (as actually run)
 
-1. SSH into the host.
-2. Create an isolated directory, e.g. `~/sentinel-gate`, separate from
-   anything else on the host.
-3. Clone the public GitHub repo into it (once pushed) and create a
-   dedicated venv:
+1. SSH into the host: `ssh -i ~/.ssh/jd-deploy/gcp_jd_relay knbnagendra_gmail_com@<HOST_EXTERNAL_IP>`
+2. Clone into an isolated directory, separate from anything else on the host:
    ```
-   python -m venv .venv
-   source .venv/bin/activate
-   pip install -r requirements.txt streamlit
+   git clone https://github.com/knbnagendra/sentinel-gate.git ~/sentinel-gate
+   cd ~/sentinel-gate
+   python3 -m venv .venv
+   .venv/bin/pip install -r requirements.txt
    ```
-4. Copy `.env` (the real hackathon Alpaca keys + Anthropic key) to the host
-   out-of-band (`scp`, not committed to git) and lock it down:
+3. Copy **both** env files to the host out-of-band (`scp`, never committed
+   to git), lock them down, and point the active `.env` at the throwaway
+   test account first -- **not** the hackathon account:
    ```
-   chmod 600 ~/sentinel-gate/.env
+   scp .env.test <host>:~/sentinel-gate/.env.test   # throwaway sandbox account
+   scp .env      <host>:~/sentinel-gate/.env.hackathon  # real hackathon account, staged but inactive
+   ssh <host> "cd ~/sentinel-gate && chmod 600 .env.test .env.hackathon && ln -sf .env.test .env"
    ```
-5. Create two systemd services:
-   - `sentinel-gate-loop.service` -- `ExecStart=.../.venv/bin/python -m agent.loop`, `Restart=on-failure`
-   - `sentinel-gate-dashboard.service` -- `ExecStart=.../.venv/bin/streamlit run dashboard/app.py --server.port 8501 --server.address 0.0.0.0`
-   Both with `WorkingDirectory=~/sentinel-gate` and an `EnvironmentFile`
-   pointing at `.env`.
-6. Open a firewall rule allowing inbound TCP on the dashboard's port
-   (8501) -- the host currently only allows SSH in.
-7. `systemctl enable --now` both services.
-8. Verify:
-   - `journalctl -u sentinel-gate-loop -f` shows cycles starting/completing
-     on schedule during market hours.
-   - `http://<HOST_EXTERNAL_IP>:8501` loads the dashboard from a machine
-     outside the host's network.
+   The active `.env` is a **symlink**, not a copy -- swapping accounts later
+   is just repointing the symlink + restarting the services, not re-copying
+   files.
+4. Two systemd services, `WorkingDirectory=/home/<user>/sentinel-gate`,
+   `Restart=on-failure`, `RestartSec=10`:
+   - `sentinel-gate-loop.service` -- `ExecStart=.../.venv/bin/python -m agent.loop`
+   - `sentinel-gate-dashboard.service` -- `ExecStart=.../.venv/bin/streamlit run dashboard/app.py --server.port 8501 --server.address 0.0.0.0 --server.headless true`
+
+   Neither uses `EnvironmentFile=` -- `load_dotenv()` inside `loop.py` /
+   `dashboard/app.py` reads the `.env` symlink directly at process start,
+   which is what makes the symlink-swap approach work without editing the
+   unit files.
+5. Open the dashboard's port on **both** firewalls -- this host has two
+   independent layers and both blocked it by default:
+   ```
+   gcloud compute firewall-rules create sentinel-gate-dashboard \
+     --network=default --direction=INGRESS --action=ALLOW \
+     --rules=tcp:8501 --source-ranges=0.0.0.0/0
+   sudo ufw allow 8501/tcp comment 'Sentinel Gate dashboard'
+   ```
+   (`gcloud` was already authenticated on the host itself via its instance
+   service account -- no separate credential setup needed.)
+6. `sudo systemctl enable --now sentinel-gate-loop sentinel-gate-dashboard`
+7. Verify: `sudo systemctl status <unit>` shows `active (running)`,
+   `curl http://localhost:8501` returns 200 on the host, and
+   `http://<HOST_EXTERNAL_IP>:8501` loads from an outside machine.
+
+## Scheduled account swap (test -> hackathon)
+
+To test safely against the sandbox account first and switch to the real
+hackathon account exactly at kickoff without a human needing to be present:
+
+```
+cat > ~/sentinel-gate/swap_to_hackathon.sh <<'EOF'
+#!/bin/bash
+set -e
+cd /home/<user>/sentinel-gate
+ln -sf .env.hackathon .env
+sudo systemctl restart sentinel-gate-loop sentinel-gate-dashboard
+echo "$(date -u): swapped to hackathon .env" >> swap.log
+EOF
+chmod +x ~/sentinel-gate/swap_to_hackathon.sh
+
+sudo systemd-run --on-calendar='2026-08-28 15:00:00 UTC' \
+  --unit=sentinel-gate-account-swap \
+  /home/<user>/sentinel-gate/swap_to_hackathon.sh
+```
+
+`15:00:00 UTC` = 11:00 AM **EDT** (America/New_York is UTC-4 in August, not
+UTC-5 -- verified with `zoneinfo`, not assumed). Check with
+`systemctl list-timers | grep sentinel-gate`.
+
+**Caveat**: this is a *transient* systemd timer -- it does not survive a
+host reboot. The VM had 55+ days of uptime at deploy time, so the risk is
+low, but if the swap doesn't fire, run `swap_to_hackathon.sh` manually and
+verify `readlink ~/sentinel-gate/.env` points at `.env.hackathon` before
+the competition needs real trading activity.
 
 ## Operational notes
 
@@ -92,14 +140,46 @@ will work.
   re-confirm the IP immediately before submitting the Application URL.
   Reserving a static IP removes this risk entirely at a small ongoing cost,
   if preferred.
-- **Resource sharing**: this is a small (`e2-micro`-class) shared-vCPU host
-  already running another service. Sentinel Gate's loop and dashboard are
-  lightweight, but monitor memory if both services are doing meaningful work
-  at the same time.
-- **Rollback**: `systemctl stop sentinel-gate-loop sentinel-gate-dashboard`
-  stops both without touching anything else on the host.
-- **Testing vs. the real run**: verify the full cycle (MCP connection,
-  Claude reasoning, gated execution) against `.env.test` credentials for a
-  separate throwaway paper account first. Only point the deployed services
-  at the real hackathon `.env` once that's confirmed working, so the
-  judged account's history starts clean from the actual competition.
+- **Resource sharing**: this is a small (`e2-micro`-class, ~1GB RAM)
+  shared-vCPU host already running other projects. At deploy time, ~536MB
+  was available and the loop + dashboard together use well under 50MB, so
+  headroom is fine -- but this is not a dedicated box, monitor `free -h` if
+  anything looks slow.
+- **Rollback** (mid-competition, without touching anything else on the host):
+  `sudo systemctl stop sentinel-gate-loop sentinel-gate-dashboard`
+- **Testing vs. the real run**: the full cycle (MCP connection, Claude
+  reasoning, gated execution, `close_position`) should be verified against
+  `.env.test` before the scheduled swap fires, so the judged account's
+  history starts clean from the actual competition rather than from
+  whatever happened during testing.
+
+## Post-competition cleanup (after 2026-09-04 submission)
+
+This is **shared infrastructure** running other unrelated projects --
+cleanup must remove everything Sentinel Gate added without touching
+anything else on the host.
+
+```
+# Stop and remove the services
+sudo systemctl disable --now sentinel-gate-loop sentinel-gate-dashboard
+sudo rm /etc/systemd/system/sentinel-gate-loop.service \
+        /etc/systemd/system/sentinel-gate-dashboard.service
+sudo systemctl daemon-reload
+
+# Remove the account-swap timer if it's still around for any reason
+sudo systemctl stop sentinel-gate-account-swap.timer 2>/dev/null || true
+
+# Close both firewalls back up
+gcloud compute firewall-rules delete sentinel-gate-dashboard --quiet
+sudo ufw delete allow 8501/tcp
+
+# Remove the code, venv, and both .env files (real Alpaca + Anthropic
+# credentials live in .env.hackathon -- delete it, don't leave it on a
+# shared host after the competition ends)
+rm -rf ~/sentinel-gate
+```
+
+Also worth doing once the competition is over and results are recorded:
+revoke or rotate the Anthropic API key and Alpaca hackathon-account keys
+used here, since they were staged in plaintext on a shared host (locked to
+`chmod 600`, but still worth rotating out of caution once no longer needed).

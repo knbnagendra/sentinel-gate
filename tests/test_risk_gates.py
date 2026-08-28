@@ -14,6 +14,8 @@ from agent.risk_gates import (
     RiskConfig,
     TradeProposal,
     evaluate_trade,
+    find_partial_take_profits,
+    find_protective_exits,
     is_market_hours,
     is_in_cooldown,
     mark_cooldown,
@@ -162,3 +164,93 @@ def test_cooldown_is_scoped_per_symbol_and_strategy():
 )
 def test_is_market_hours_boundaries(when, expected):
     assert is_market_hours(when) is expected
+
+
+def _position(symbol="SPY", unrealized_plpc=0.0) -> dict:
+    return {"symbol": symbol, "unrealized_plpc": unrealized_plpc}
+
+
+def test_no_protective_exit_within_thresholds():
+    """Alpaca doesn't support OCO/bracket orders for options, so this
+    threshold check is the only thing standing between a losing position
+    and it just sitting there until Claude happens to notice -- must not
+    fire when nothing has actually breached."""
+    config = base_config()
+    positions = [_position(unrealized_plpc=10.0), _position("QQQ", unrealized_plpc=-10.0)]
+    assert find_protective_exits(positions, config) == []
+
+
+def test_stop_loss_triggers_exit():
+    config = base_config()
+    positions = [_position("SPY", unrealized_plpc=-55.0)]
+    exits = find_protective_exits(positions, config)
+    assert len(exits) == 1
+    assert exits[0].symbol == "SPY"
+    assert "stop-loss" in exits[0].reason
+
+
+def test_take_profit_triggers_exit():
+    config = base_config()
+    positions = [_position("QQQ", unrealized_plpc=150.0)]
+    exits = find_protective_exits(positions, config)
+    assert len(exits) == 1
+    assert exits[0].symbol == "QQQ"
+    assert "take-profit" in exits[0].reason
+
+
+def test_exit_exactly_at_threshold_triggers():
+    config = base_config()
+    positions = [_position("SPY", unrealized_plpc=config.stop_loss_pct)]
+    assert len(find_protective_exits(positions, config)) == 1
+
+
+def test_position_missing_unrealized_plpc_is_skipped():
+    config = base_config()
+    positions = [{"symbol": "SPY"}]  # no unrealized_plpc key
+    assert find_protective_exits(positions, config) == []
+
+
+def test_multiple_positions_only_breaching_ones_exit():
+    config = base_config()
+    positions = [
+        _position("SPY", unrealized_plpc=-10.0),  # fine
+        _position("QQQ", unrealized_plpc=-60.0),  # stop-loss
+        _position("AAPL", unrealized_plpc=120.0),  # take-profit
+    ]
+    exits = find_protective_exits(positions, config)
+    assert {e.symbol for e in exits} == {"QQQ", "AAPL"}
+
+
+def test_partial_take_profit_fires_between_thresholds():
+    config = base_config()  # partial=50%, full=100% by default
+    positions = [_position("SPY", unrealized_plpc=60.0)]
+    exits = find_partial_take_profits(positions, config, already_triggered=set())
+    assert len(exits) == 1
+    assert exits[0].symbol == "SPY"
+    assert exits[0].close_percentage == config.partial_take_profit_close_fraction
+
+
+def test_partial_take_profit_does_not_fire_below_threshold():
+    config = base_config()
+    positions = [_position("SPY", unrealized_plpc=20.0)]
+    assert find_partial_take_profits(positions, config, already_triggered=set()) == []
+
+
+def test_partial_take_profit_does_not_fire_at_or_above_full_target():
+    """Once a position has crossed the full take-profit target, that's
+    find_protective_exits' job (a full close) -- the partial tier must not
+    also fire and double-report the same position."""
+    config = base_config()
+    positions = [_position("SPY", unrealized_plpc=150.0)]
+    assert find_partial_take_profits(positions, config, already_triggered=set()) == []
+
+
+def test_partial_take_profit_skips_already_triggered_symbol():
+    """The core scenario this state-tracking exists for: unrealized_plpc
+    doesn't reset after a partial close, so without already_triggered the
+    same tier would fire again on every subsequent poll against the
+    remaining runner shares."""
+    config = base_config()
+    positions = [_position("SPY", unrealized_plpc=60.0)]
+    exits = find_partial_take_profits(positions, config, already_triggered={"SPY"})
+    assert exits == []

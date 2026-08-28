@@ -4,7 +4,9 @@ must actually match what the strategy name claims, and covered_call /
 cash_secured_put must be backed by a real covering position or cash.
 """
 
+from datetime import datetime
 from unittest.mock import MagicMock, patch
+from zoneinfo import ZoneInfo
 
 import pytest
 from alpaca.common.exceptions import APIError
@@ -14,10 +16,13 @@ from agent.execute import (
     _parse_legs,
     _parse_occ_symbol,
     _validate_legs_match_strategy,
+    _validate_min_days_to_expiration,
     _validate_symbol_matches_legs,
     _verify_coverage,
     close_position,
 )
+
+ET = ZoneInfo("America/New_York")
 
 CALL = "SPY260904C00650000"
 CALL_HIGHER_STRIKE = "SPY260904C00655000"
@@ -176,6 +181,45 @@ def test_symbol_rejects_mismatch_on_any_leg():
         _validate_symbol_matches_legs("SPY", legs)
 
 
+def test_min_dte_allows_0dte_by_default():
+    """0DTE is deliberately allowed by default -- this is paper trading
+    scored on P&L, not real capital, so the symmetric variance of 0DTE
+    gamma is an acceptable, deliberate choice rather than something to
+    block outright. The fast protective loop (loop.py) is the real
+    mitigation for holding 0DTE, not this gate."""
+    now = datetime(2026, 9, 4, 11, 0, tzinfo=ET)  # same day as CALL's expiry
+    _validate_min_days_to_expiration([OrderLeg(CALL, "buy")], now)  # does not raise
+
+
+def test_min_dte_allows_sufficient_expiry():
+    now = datetime(2026, 9, 1, 11, 0, tzinfo=ET)  # CALL expires 3 days out
+    _validate_min_days_to_expiration([OrderLeg(CALL, "buy")], now)  # does not raise
+
+
+def test_min_dte_blocks_when_configured_higher(monkeypatch):
+    """The gate is a live dial, not dead code -- if MIN_DTE_DAYS is raised
+    for a more conservative strategy, it must actually enforce that."""
+    monkeypatch.setattr("agent.execute.MIN_DTE_DAYS", 1)
+    now = datetime(2026, 9, 4, 11, 0, tzinfo=ET)  # same day as CALL's expiry
+    with pytest.raises(ValueError, match="0 day"):
+        _validate_min_days_to_expiration([OrderLeg(CALL, "buy")], now)
+
+
+def test_min_dte_boundary_at_exactly_configured_min(monkeypatch):
+    monkeypatch.setattr("agent.execute.MIN_DTE_DAYS", 1)
+    now = datetime(2026, 9, 3, 11, 0, tzinfo=ET)  # CALL expires exactly 1 day out
+    _validate_min_days_to_expiration([OrderLeg(CALL, "buy")], now)  # does not raise
+
+
+def test_min_dte_checks_every_leg(monkeypatch):
+    monkeypatch.setattr("agent.execute.MIN_DTE_DAYS", 1)
+    near_dated = "SPY260901C00650000"
+    now = datetime(2026, 9, 1, 11, 0, tzinfo=ET)  # near_dated is 0DTE
+    legs = [OrderLeg(CALL, "buy"), OrderLeg(near_dated, "sell")]
+    with pytest.raises(ValueError, match="0 day"):
+        _validate_min_days_to_expiration(legs, now)
+
+
 def test_close_position_submits_and_returns_summary():
     mock_client = MagicMock()
     mock_client.close_position.return_value = MagicMock(id="order-123", status="accepted")
@@ -183,9 +227,22 @@ def test_close_position_submits_and_returns_summary():
     with patch("agent.execute._trading_client", return_value=mock_client):
         result = close_position("AAPL")
 
-    mock_client.close_position.assert_called_once_with("AAPL")
+    mock_client.close_position.assert_called_once_with("AAPL", None)
     assert "order-123" in result
     assert "accepted" in result
+
+
+def test_close_position_partial_passes_percentage():
+    mock_client = MagicMock()
+    mock_client.close_position.return_value = MagicMock(id="order-456", status="accepted")
+
+    with patch("agent.execute._trading_client", return_value=mock_client):
+        result = close_position("AAPL", percentage=50)
+
+    args, _ = mock_client.close_position.call_args
+    assert args[0] == "AAPL"
+    assert args[1].percentage == "50"
+    assert "50% partial" in result
 
 
 def test_close_position_raises_on_missing_position():

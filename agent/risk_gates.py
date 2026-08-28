@@ -42,6 +42,19 @@ class RiskConfig:
     max_position_pct: float
     max_concurrent_positions: int
     cooldown_minutes: int
+    # Alpaca doesn't support OCO/bracket orders for options (verified against
+    # their docs -- only order_class "simple"/"mleg" apply to options), so
+    # stop-loss/take-profit can't be attached at entry like on equities. These
+    # thresholds are the code-enforced equivalent: checked every cycle,
+    # independent of Claude's judgment, in find_protective_exits() below.
+    stop_loss_pct: float = -50.0
+    take_profit_pct: float = 100.0
+    # Scales out part of a winner early instead of all-or-nothing at
+    # take_profit_pct -- locks in gains on part of the position while the
+    # rest keeps running toward the full target (or gets stopped out).
+    # Must stay below take_profit_pct or the partial tier would never fire.
+    partial_take_profit_pct: float = 50.0
+    partial_take_profit_close_fraction: float = 50.0  # % of the position to close at that tier
 
     @classmethod
     def from_env(cls) -> "RiskConfig":
@@ -50,6 +63,12 @@ class RiskConfig:
             max_position_pct=float(os.environ.get("MAX_POSITION_PCT", "10")),
             max_concurrent_positions=int(os.environ.get("MAX_CONCURRENT_POSITIONS", "6")),
             cooldown_minutes=int(os.environ.get("COOLDOWN_MINUTES", "30")),
+            stop_loss_pct=float(os.environ.get("STOP_LOSS_PCT", "-50")),
+            take_profit_pct=float(os.environ.get("TAKE_PROFIT_PCT", "100")),
+            partial_take_profit_pct=float(os.environ.get("PARTIAL_TAKE_PROFIT_PCT", "50")),
+            partial_take_profit_close_fraction=float(
+                os.environ.get("PARTIAL_TAKE_PROFIT_CLOSE_FRACTION", "50")
+            ),
         )
 
 
@@ -170,3 +189,83 @@ def evaluate_trade(
         )
 
     return RiskDecision(True, "all gates passed")
+
+
+@dataclass(frozen=True)
+class ProtectiveExit:
+    symbol: str
+    reason: str
+
+
+def find_protective_exits(positions: list[dict], config: RiskConfig) -> list[ProtectiveExit]:
+    """Positions whose unrealized P&L% has breached the stop-loss or
+    take-profit threshold. Checked every cycle by loop.py, independent of
+    Claude's judgment -- this is the deterministic backstop, not a
+    suggestion; Claude's close_position tool is the discretionary layer
+    on top of it, not a replacement for it.
+    """
+    exits = []
+    for position in positions:
+        plpc = position.get("unrealized_plpc")
+        if plpc is None:
+            continue
+        symbol = position["symbol"]
+        if plpc <= config.stop_loss_pct:
+            exits.append(
+                ProtectiveExit(
+                    symbol=symbol,
+                    reason=f"stop-loss triggered ({plpc:+.2f}% <= {config.stop_loss_pct:+.2f}%)",
+                )
+            )
+        elif plpc >= config.take_profit_pct:
+            exits.append(
+                ProtectiveExit(
+                    symbol=symbol,
+                    reason=f"take-profit triggered ({plpc:+.2f}% >= {config.take_profit_pct:+.2f}%)",
+                )
+            )
+    return exits
+
+
+@dataclass(frozen=True)
+class PartialExit:
+    symbol: str
+    close_percentage: float
+    reason: str
+
+
+def find_partial_take_profits(
+    positions: list[dict], config: RiskConfig, already_triggered: set[str]
+) -> list[PartialExit]:
+    """Scales out of winners incrementally instead of all-or-nothing --
+    locks in gains on part of a position once it crosses
+    partial_take_profit_pct, letting the rest run toward the full
+    take_profit_pct target (handled separately by find_protective_exits)
+    or get stopped out.
+
+    `already_triggered` (symbols that already had this tier fire) is
+    required because unrealized_plpc doesn't reset after a partial close --
+    without it, the same tier would fire again on every subsequent poll
+    against the remaining runner shares. Callers own persisting this set
+    across polls (see loop.py) and should clear a symbol once its position
+    is fully closed.
+    """
+    exits = []
+    for position in positions:
+        plpc = position.get("unrealized_plpc")
+        symbol = position["symbol"]
+        if plpc is None or symbol in already_triggered:
+            continue
+        if config.partial_take_profit_pct <= plpc < config.take_profit_pct:
+            exits.append(
+                PartialExit(
+                    symbol=symbol,
+                    close_percentage=config.partial_take_profit_close_fraction,
+                    reason=(
+                        f"partial take-profit triggered ({plpc:+.2f}% >= "
+                        f"{config.partial_take_profit_pct:+.2f}%), scaling out "
+                        f"{config.partial_take_profit_close_fraction:.0f}%"
+                    ),
+                )
+            )
+    return exits

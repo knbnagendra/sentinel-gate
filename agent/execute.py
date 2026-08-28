@@ -9,15 +9,26 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass
+from datetime import date, datetime
 
 from alpaca.common.exceptions import APIError
 from alpaca.trading.client import TradingClient
 from alpaca.trading.enums import OrderClass, OrderSide, OrderType, TimeInForce
-from alpaca.trading.requests import MarketOrderRequest, OptionLegRequest
+from alpaca.trading.requests import ClosePositionRequest, MarketOrderRequest, OptionLegRequest
 
-from agent.risk_gates import TradeProposal
+from agent.risk_gates import ET, TradeProposal
 
 MULTI_LEG_STRATEGIES = {"vertical_debit_spread", "vertical_credit_spread", "iron_condor"}
+
+# 0DTE (and near-0DTE) options can move 50-100%+ in well under a minute on
+# extreme gamma near expiration -- symmetric variance, not free leverage.
+# Deliberately allowed by default (this is paper trading scored on P&L, not
+# real capital, and SPY/QQQ 0DTE is one of the most liquid corners of the
+# options market) but kept as an explicit, visible dial: the fast protective
+# loop in loop.py (~30-60s, independent of the 15-min reasoning cycle) is
+# the real mitigation for holding 0DTE, not this gate. Raise MIN_DTE_DAYS if
+# a more conservative cushion is wanted instead.
+MIN_DTE_DAYS = int(os.environ.get("MIN_DTE_DAYS", "0"))
 
 # Exactly which leg count + buy/sell composition each strategy is allowed to
 # submit as. This is what stops a strategy label that passed risk_gates
@@ -41,6 +52,7 @@ class OrderLeg:
 @dataclass(frozen=True)
 class ParsedOccSymbol:
     underlying: str
+    expiration: date
     right: str  # "C" or "P"
     strike: float
 
@@ -75,8 +87,24 @@ def _parse_occ_symbol(occ_symbol: str) -> ParsedOccSymbol:
     match = _OCC_RE.match(occ_symbol)
     if not match:
         raise ValueError(f"not a valid OCC option symbol: {occ_symbol!r}")
-    underlying, _expiry, right, strike_raw = match.groups()
-    return ParsedOccSymbol(underlying=underlying, right=right, strike=int(strike_raw) / 1000)
+    underlying, expiry_raw, right, strike_raw = match.groups()
+    expiration = datetime.strptime(expiry_raw, "%y%m%d").date()
+    return ParsedOccSymbol(
+        underlying=underlying, expiration=expiration, right=right, strike=int(strike_raw) / 1000
+    )
+
+
+def _validate_min_days_to_expiration(legs: list[OrderLeg], now: datetime) -> None:
+    today = now.astimezone(ET).date()
+    for leg in legs:
+        parsed = _parse_occ_symbol(leg.occ_symbol)
+        dte = (parsed.expiration - today).days
+        if dte < MIN_DTE_DAYS:
+            raise ValueError(
+                f"leg {leg.occ_symbol!r} expires in {dte} day(s), below the "
+                f"minimum {MIN_DTE_DAYS}-day cushion (0DTE/near-0DTE options move "
+                f"too fast for a periodic reasoning cycle to react to safely)"
+            )
 
 
 def _validate_legs_match_strategy(strategy: str, legs: list[OrderLeg]) -> None:
@@ -154,6 +182,7 @@ def execute_trade(proposal: TradeProposal, legs_description: str) -> str:
     legs = _parse_legs(legs_description)
     _validate_symbol_matches_legs(proposal.symbol, legs)
     _validate_legs_match_strategy(proposal.strategy, legs)
+    _validate_min_days_to_expiration(legs, proposal.now)
     _verify_coverage(client, proposal.strategy, legs)
 
     if proposal.strategy in MULTI_LEG_STRATEGIES:
@@ -186,13 +215,17 @@ def execute_trade(proposal: TradeProposal, legs_description: str) -> str:
     return f"order {submitted.id} ({submitted.status}) for {legs_description}"
 
 
-def close_position(symbol: str) -> str:
-    """Close an existing open position -- the counterpart to execute_trade
-    for managing a position out (profit-take or cut a loss) rather than
-    entering a new one."""
+def close_position(symbol: str, percentage: float | None = None) -> str:
+    """Close an existing open position, in full or in part -- the
+    counterpart to execute_trade for managing a position out (profit-take
+    or cut a loss) rather than entering a new one. `percentage` (0-100)
+    scales out part of the position, e.g. for taking incremental profits;
+    omit it for a full close."""
     client = _trading_client()
+    close_options = ClosePositionRequest(percentage=str(percentage)) if percentage is not None else None
     try:
-        order = client.close_position(symbol)
+        order = client.close_position(symbol, close_options)
     except APIError as exc:
         raise ValueError(f"could not close position {symbol!r}: {exc}")
-    return f"close order {order.id} ({order.status}) for {symbol}"
+    suffix = f" ({percentage:.0f}% partial)" if percentage is not None else ""
+    return f"close order {order.id} ({order.status}) for {symbol}{suffix}"
