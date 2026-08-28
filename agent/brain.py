@@ -88,26 +88,44 @@ def build_alpaca_mcp_params() -> StdioServerParameters:
     )
 
 
+class PositionCounter:
+    """Shared, mutable running count of net position changes within a
+    single cycle. propose_trade and close_position each get their own
+    closure, but both need to see the SAME running count -- otherwise
+    closing 2 positions then trying to open 3 new ones in the same cycle
+    would check max_concurrent_positions against the stale pre-close count,
+    blocking a trade that should actually be allowed since slots were
+    freed. Not a safety bug (it only ever over-blocks, never
+    under-blocks), but it directly costs opportunities."""
+
+    def __init__(self) -> None:
+        self.net_change = 0
+
+    def opened(self) -> None:
+        self.net_change += 1
+
+    def closed(self) -> None:
+        self.net_change -= 1
+
+
 def make_propose_trade_tool(
     account: AccountState,
     config: RiskConfig,
     cooldown_data: dict,
     cooldown_path: Path,
     decisions: list[dict],
+    position_counter: PositionCounter,
 ):
     """Returns a propose_trade tool closed over this cycle's account snapshot
     and cooldown state. A fresh closure is built every cycle so the account
     snapshot (equity, daily P&L, open positions) can't go stale between
-    cycles -- and within a single cycle, `positions_opened` tracks trades
-    already executed this turn so a second propose_trade call in the same
-    turn is checked against the real running position count, not the count
-    from the start of the cycle.
+    cycles -- and within a single cycle, `position_counter` (shared with
+    close_position's closure) tracks the real running position count from
+    everything done so far this turn, not just the count from cycle start.
 
     Every call appends to `decisions` -- the ground-truth record of what the
     risk gates actually did, independent of how Claude narrates it, since
     that's what the dashboard and write-up should be built from."""
-
-    positions_opened = 0
 
     @beta_async_tool
     async def propose_trade(symbol: str, strategy: str, max_loss: float, legs: str) -> str:
@@ -133,11 +151,11 @@ def make_propose_trade_tool(
                 multi-leg spread (semicolon-separated). Look up the precise
                 OCC symbol via your option-chain tools first -- do not guess it.
         """
-        nonlocal positions_opened
         now = datetime.now(timezone.utc)
         proposal = TradeProposal(symbol=symbol, strategy=strategy, max_loss=max_loss, now=now)
         effective_account = replace(
-            account, open_positions_count=account.open_positions_count + positions_opened
+            account,
+            open_positions_count=account.open_positions_count + position_counter.net_change,
         )
         decision = evaluate_trade(proposal, effective_account, config, cooldown_data)
 
@@ -170,14 +188,16 @@ def make_propose_trade_tool(
         # The order is now live on Alpaca -- record that immediately,
         # before any further bookkeeping, so a failure in cooldown
         # persistence below can never leave an executed trade unlogged.
-        # No orphan executions: if it happened, it's in decisions.
+        # No orphan executions: if it happened, it's in decisions. Same
+        # reasoning for the counter: it opened regardless of whether
+        # cooldown persistence below succeeds.
         record["execution_result"] = result
         decisions.append(record)
+        position_counter.opened()
 
         try:
             mark_cooldown(cooldown_data, cooldown_key(symbol, strategy), now)
             save_cooldowns(cooldown_data, cooldown_path)
-            positions_opened += 1
         except Exception as exc:
             print(
                 f"WARNING: {symbol}/{strategy} executed but cooldown "
@@ -189,7 +209,7 @@ def make_propose_trade_tool(
     return propose_trade
 
 
-def make_close_position_tool(decisions: list[dict]):
+def make_close_position_tool(decisions: list[dict], position_counter: PositionCounter):
     """Returns a close_position tool. Closing a position reduces risk (or
     realizes it) rather than adding to it, so it isn't run through
     evaluate_trade's new-entry gates -- it only needs a market-hours check,
@@ -233,6 +253,7 @@ def make_close_position_tool(decisions: list[dict]):
         record["gate_allowed"] = True
         record["execution_result"] = result
         decisions.append(record)
+        position_counter.closed()
         return f"EXECUTED: {result}"
 
     return close_position
@@ -264,10 +285,11 @@ async def run_cycle(
             data_tools = [async_mcp_tool(t, mcp_client) for t in tools_result.tools]
 
             decisions: list[dict] = []
+            position_counter = PositionCounter()
             propose_trade = make_propose_trade_tool(
-                account, config, cooldown_data, cooldown_path, decisions
+                account, config, cooldown_data, cooldown_path, decisions, position_counter
             )
-            close_position = make_close_position_tool(decisions)
+            close_position = make_close_position_tool(decisions, position_counter)
 
             if positions:
                 positions_lines = "\n".join(
