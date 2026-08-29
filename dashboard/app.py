@@ -141,7 +141,16 @@ for cycle in cycles:
     with st.container(border=True):
         st.subheader(cycle["timestamp"])
         if is_failure:
-            st.error(cycle["reasoning"])
+            # log_cycle_failure stores the full traceback in state/cycles.jsonl
+            # (still there for SSH/journalctl-style debugging), but the
+            # dashboard only ever shows a one-line summary -- a judge-facing
+            # page doesn't need it and a raw multi-hundred-line trace reads
+            # as broken even when the system actually handled it correctly.
+            # A Python traceback always ends with "ExceptionType: message"
+            # as its last line, which is all that's shown here.
+            lines = [line for line in cycle["reasoning"].splitlines() if line.strip()]
+            summary = lines[-1] if lines else cycle["reasoning"]
+            st.error(f"Cycle failed: {summary}")
         elif cycle["reasoning"]:
             st.write(cycle["reasoning"])
 
