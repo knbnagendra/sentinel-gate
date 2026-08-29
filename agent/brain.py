@@ -14,6 +14,7 @@ risk gates in risk_gates.py before anything reaches Alpaca's Trading API.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import shutil
 import sys
@@ -39,6 +40,7 @@ from agent.risk_gates import (
 from agent.execute import execute_trade
 from agent.execute import close_position as execute_close_position
 from agent.log_store import log_cycle
+from agent.market_scan import build_market_scan
 
 MODEL = os.environ.get("CLAUDE_MODEL", "claude-opus-5")
 
@@ -323,6 +325,14 @@ async def run_cycle(
     cooldown_data = load_cooldowns(cooldown_path)
     positions = positions or []
 
+    # Prefetched in plain Python via alpaca-py -- zero Anthropic tokens --
+    # instead of Claude spending several MCP tool-call round-trips per
+    # cycle on the broad scanning phase (movers, quotes, news) before it
+    # narrows down. to_thread since this makes blocking network calls and
+    # run_cycle is async. Doesn't depend on the MCP session, so it runs
+    # before that starts.
+    market_scan = await asyncio.to_thread(build_market_scan, watchlist)
+
     client = AsyncAnthropic()
     server_params = build_alpaca_mcp_params()
 
@@ -359,11 +369,16 @@ async def run_cycle(
                 f"Account equity: ${account.equity:,.2f}\n"
                 f"Today's P&L: {account.daily_pnl_pct:+.2f}%\n"
                 f"Open positions ({account.open_positions_count}):\n{positions_lines}\n\n"
+                f"{market_scan}\n\n"
                 "First review your open positions above and decide whether any "
                 "should be closed (profit target, cutting a loss, near "
-                "expiration). Then review current market conditions for the "
-                "watchlist and decide whether any new options trade is worth "
-                "proposing this cycle."
+                "expiration). Then review the watchlist snapshot/news/movers "
+                "above -- this already covers the full watchlist, so you don't "
+                "need to re-fetch quotes or news for names already shown "
+                "there. Use your MCP tools for the narrower follow-up once "
+                "you've picked candidates: option chains, deeper history, or "
+                "anything not already covered above. Decide whether any new "
+                "options trade is worth proposing this cycle."
             )
 
             runner = client.beta.messages.tool_runner(
