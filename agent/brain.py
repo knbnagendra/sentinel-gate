@@ -377,6 +377,20 @@ async def run_cycle(
                 # behavior change. Confirmed supported in the installed SDK
                 # via tool_runner's cache_control param.
                 cache_control={"type": "ephemeral"},
+                # "medium" instead of the default "high": cuts thinking-token
+                # spend on a real model tier without dropping to a cheaper,
+                # less capable model -- keeps Sonnet 5's reasoning quality
+                # (the thing P&L actually depends on) while directly cutting
+                # cost, unlike a model downgrade which trades quality away.
+                output_config={"effort": "medium"},
+                # Clears superseded tool call results (old quote/chain
+                # lookups Claude has already reasoned past) partway through
+                # a cycle's internal tool-calling loop, so later turns in
+                # the same cycle resend less context -- compounds with
+                # caching rather than duplicating it (this shrinks what
+                # gets sent; caching makes repeats of what's left cheaper).
+                context_management={"edits": [{"type": "clear_tool_uses_20250919"}]},
+                betas=["context-management-2025-06-27"],
             )
 
             transcript = []
