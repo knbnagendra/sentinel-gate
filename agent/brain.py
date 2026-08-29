@@ -351,8 +351,11 @@ async def run_cycle(
             else:
                 positions_lines = "  (none)"
 
+            # Only genuinely volatile, per-cycle data goes in the user
+            # message -- the watchlist is static across cycles (env-driven,
+            # unchanged run to run) so it lives in the cached system block
+            # instead, not re-sent uncached every cycle for no reason.
             user_prompt = (
-                f"Watchlist: {', '.join(watchlist)}\n"
                 f"Account equity: ${account.equity:,.2f}\n"
                 f"Today's P&L: {account.daily_pnl_pct:+.2f}%\n"
                 f"Open positions ({account.open_positions_count}):\n{positions_lines}\n\n"
@@ -366,16 +369,37 @@ async def run_cycle(
             runner = client.beta.messages.tool_runner(
                 model=MODEL,
                 max_tokens=8000,
-                system=SYSTEM_PROMPT,
+                # Explicit cache_control on the system block itself, not
+                # left to the top-level marker: tool_runner's top-level
+                # cache_control marks the LAST cacheable block in the
+                # request, which on every cycle's first call is the
+                # volatile user_prompt (equity/P&L/positions change every
+                # cycle) -- so the marker was landing on content that can
+                # never byte-match cycle to cycle, and the expensive stable
+                # prefix (system + all 47 tool schemas) was never actually
+                # getting cached across requests despite yesterday's fix
+                # intending exactly that. ttl="1h" so it survives across
+                # the ~4 cycles that fit in an hour (default 5m expires
+                # before the next 15-min cycle even starts). Confirmed
+                # against the installed SDK: BetaCacheControlEphemeralParam
+                # accepts ttl "5m"|"1h", no beta header required, and this
+                # is fully compatible with tool_runner + MCP-derived tools.
+                system=[
+                    {
+                        "type": "text",
+                        "text": f"{SYSTEM_PROMPT}\n\nWatchlist: {', '.join(watchlist)}",
+                        "cache_control": {"type": "ephemeral", "ttl": "1h"},
+                    }
+                ],
                 tools=[*data_tools, propose_trade, close_position],
                 messages=[{"role": "user", "content": user_prompt}],
-                # Auto-caches the last cacheable block (system + full tool
-                # list -- 47 MCP tools + propose_trade + close_position,
-                # identical on every internal turn this cycle makes). A
-                # cycle with several tool calls resends that same prefix on
-                # every internal request; this is a real cost cut with zero
-                # behavior change. Confirmed supported in the installed SDK
-                # via tool_runner's cache_control param.
+                # Separate from the system-block marker above: this still
+                # chains the growing per-turn conversation tail within a
+                # single cycle's multi-tool-call loop (unaffected by where
+                # the system marker sits -- render order is
+                # tools -> system -> messages, so this just extends caching
+                # to whatever comes after, using the default 5m TTL since
+                # that's plenty for one cycle's ~1-2 minute internal loop).
                 cache_control={"type": "ephemeral"},
                 # "medium" instead of the default "high": cuts thinking-token
                 # spend on a real model tier without dropping to a cheaper,
