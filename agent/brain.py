@@ -128,7 +128,14 @@ def _resolve_uvx() -> str:
 def build_alpaca_mcp_params() -> StdioServerParameters:
     return StdioServerParameters(
         command=_resolve_uvx(),
-        args=["alpaca-mcp-server"],
+        # alpaca-mcp-server depends on "fastmcp>=3.1.0" -- no upper bound.
+        # fastmcp 4.0.0 was published 2026-08-31, and uvx (no lockfile,
+        # fresh resolve every invocation) picked it up mid-competition,
+        # breaking every cycle with "ModuleNotFoundError: No module named
+        # 'fastmcp.tools.tool'" -- an internal module fastmcp 4.x
+        # apparently restructured. Pin below the breaking major version so
+        # a future upstream release can't silently break trading again.
+        args=["--with", "fastmcp<4.0.0", "alpaca-mcp-server"],
         env={
             "ALPACA_API_KEY": os.environ["ALPACA_API_KEY"],
             "ALPACA_SECRET_KEY": os.environ["ALPACA_SECRET_KEY"],
