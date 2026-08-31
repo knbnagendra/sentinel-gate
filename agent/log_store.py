@@ -25,6 +25,27 @@ def _extract_reasoning(transcript: list) -> str:
     return "\n\n".join(parts)
 
 
+def _extract_usage(transcript: list) -> dict:
+    """Sums token usage (including cache read/write) across every internal
+    API call this cycle's tool-calling loop made -- the only way to
+    actually verify prompt caching is working, rather than assuming it
+    from the code alone. Each transcript item with a `.usage` is one
+    internal request/response pair the tool_runner made this cycle."""
+    totals = {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+    }
+    for message in transcript:
+        usage = getattr(message, "usage", None)
+        if usage is None:
+            continue
+        for key in totals:
+            totals[key] += getattr(usage, key, None) or 0
+    return totals
+
+
 def log_cycle(
     account: AccountState,
     transcript: list,
@@ -37,6 +58,7 @@ def log_cycle(
         "account": asdict(account),
         "reasoning": _extract_reasoning(transcript),
         "decisions": decisions,
+        "usage": _extract_usage(transcript),
     }
     with path.open("a") as f:
         f.write(json.dumps(entry, default=str) + "\n")

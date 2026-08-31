@@ -4,13 +4,24 @@ state/cycles.jsonl and read_cycles can read it back correctly.
 """
 
 from pathlib import Path
+from unittest.mock import MagicMock
 
-from agent.log_store import log_auto_close, log_cycle_failure, read_cycles
+from agent.log_store import log_auto_close, log_cycle, log_cycle_failure, read_cycles
 from agent.risk_gates import AccountState
 
 
 def _account() -> AccountState:
     return AccountState(equity=100_000.0, daily_pnl_pct=0.0, open_positions_count=1)
+
+
+def _message_with_usage(input_tokens=100, output_tokens=50, cache_read=0, cache_creation=0):
+    message = MagicMock()
+    message.content = []
+    message.usage.input_tokens = input_tokens
+    message.usage.output_tokens = output_tokens
+    message.usage.cache_read_input_tokens = cache_read
+    message.usage.cache_creation_input_tokens = cache_creation
+    return message
 
 
 def test_log_cycle_failure_roundtrips(tmp_path):
@@ -79,3 +90,36 @@ def test_read_cycles_skips_corrupted_line(tmp_path):
     reasonings = {e["reasoning"] for e in entries}
     assert any("good entry one" in r for r in reasonings)
     assert any("good entry two" in r for r in reasonings)
+
+
+def test_log_cycle_sums_usage_across_transcript(tmp_path):
+    """The only real way to verify prompt caching is working, rather than
+    assuming it from the code alone -- one cycle's tool-calling loop makes
+    several internal API calls, and each one's usage must be counted."""
+    path = tmp_path / "cycles.jsonl"
+    transcript = [
+        _message_with_usage(input_tokens=50, output_tokens=20, cache_read=0, cache_creation=2000),
+        _message_with_usage(input_tokens=10, output_tokens=30, cache_read=2000, cache_creation=0),
+        _message_with_usage(input_tokens=10, output_tokens=15, cache_read=2000, cache_creation=0),
+    ]
+    log_cycle(_account(), transcript, decisions=[], path=path)
+
+    entries = read_cycles(path=path)
+    usage = entries[0]["usage"]
+    assert usage["input_tokens"] == 70
+    assert usage["output_tokens"] == 65
+    assert usage["cache_read_input_tokens"] == 4000
+    assert usage["cache_creation_input_tokens"] == 2000
+
+
+def test_log_cycle_handles_messages_without_usage(tmp_path):
+    path = tmp_path / "cycles.jsonl"
+    log_cycle(_account(), transcript=[object()], decisions=[], path=path)
+
+    entries = read_cycles(path=path)
+    assert entries[0]["usage"] == {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+    }

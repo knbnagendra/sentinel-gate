@@ -154,6 +154,19 @@ for cycle in cycles:
         elif cycle["reasoning"]:
             st.write(cycle["reasoning"])
 
+        usage = cycle.get("usage")
+        if usage and usage.get("input_tokens"):
+            cached = usage.get("cache_read_input_tokens", 0)
+            fresh = usage.get("input_tokens", 0)
+            total_in = cached + fresh
+            hit_pct = (cached / total_in * 100) if total_in else 0
+            st.caption(
+                f"tokens: in={fresh:,} cache_read={cached:,} "
+                f"cache_write={usage.get('cache_creation_input_tokens', 0):,} "
+                f"out={usage.get('output_tokens', 0):,} "
+                f"({hit_pct:.0f}% cache hit)"
+            )
+
         decisions = cycle["decisions"]
         if not decisions:
             if not is_failure:
