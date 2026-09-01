@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -194,33 +195,65 @@ class ProtectiveExit:
     reason: str
 
 
+_OCC_RE = re.compile(r"^([A-Z]+)\d{6}[CP]\d{8}$")
+
+
+def _underlying_of(symbol: str) -> str:
+    """Best-effort: strip the OCC option suffix to recover the underlying
+    ticker, so multi-leg positions sharing an underlying can be grouped and
+    closed together instead of one leg at a time."""
+    match = _OCC_RE.match(symbol)
+    return match.group(1) if match else symbol
+
+
 def find_protective_exits(positions: list[dict], config: RiskConfig) -> list[ProtectiveExit]:
     """Positions whose unrealized P&L% has breached the stop-loss or
     take-profit threshold. Checked every cycle by loop.py, independent of
     Claude's judgment -- this is the deterministic backstop, not a
     suggestion; Claude's close_position tool is the discretionary layer
     on top of it, not a replacement for it.
+
+    Groups legs by underlying and closes the WHOLE group together if any
+    one leg breaches -- closing a single leg of a multi-leg spread in
+    isolation can leave the other leg as an accidentally uncovered/naked
+    position. Confirmed live: Alpaca rejected exactly this
+    ("account not eligible to trade uncovered option contracts") when the
+    old per-leg-only logic tried to close just one leg of a debit spread --
+    a lucky rejection from Alpaca's own account restriction, not something
+    to rely on as the actual safety mechanism. Within a breaching group,
+    short legs are ordered before long legs: closing the short leg first
+    (buying it back) never creates naked exposure at any intermediate step
+    even though these are separate, non-atomic API calls, whereas closing
+    a long leg first would momentarily leave the short leg naked.
     """
-    exits = []
+    groups: dict[str, list[dict]] = {}
     for position in positions:
-        plpc = position.get("unrealized_plpc")
-        if plpc is None:
+        groups.setdefault(_underlying_of(position["symbol"]), []).append(position)
+
+    exits = []
+    for legs in groups.values():
+        breach_reason = None
+        for leg in legs:
+            plpc = leg.get("unrealized_plpc")
+            if plpc is None:
+                continue
+            if plpc <= config.stop_loss_pct:
+                breach_reason = (
+                    f"stop-loss triggered on {leg['symbol']} "
+                    f"({plpc:+.2f}% <= {config.stop_loss_pct:+.2f}%)"
+                )
+                break
+            if plpc >= config.take_profit_pct:
+                breach_reason = (
+                    f"take-profit triggered on {leg['symbol']} "
+                    f"({plpc:+.2f}% >= {config.take_profit_pct:+.2f}%)"
+                )
+                break
+        if breach_reason is None:
             continue
-        symbol = position["symbol"]
-        if plpc <= config.stop_loss_pct:
-            exits.append(
-                ProtectiveExit(
-                    symbol=symbol,
-                    reason=f"stop-loss triggered ({plpc:+.2f}% <= {config.stop_loss_pct:+.2f}%)",
-                )
-            )
-        elif plpc >= config.take_profit_pct:
-            exits.append(
-                ProtectiveExit(
-                    symbol=symbol,
-                    reason=f"take-profit triggered ({plpc:+.2f}% >= {config.take_profit_pct:+.2f}%)",
-                )
-            )
+        ordered_legs = sorted(legs, key=lambda leg: 0 if leg.get("side") == "short" else 1)
+        for leg in ordered_legs:
+            exits.append(ProtectiveExit(symbol=leg["symbol"], reason=breach_reason))
     return exits
 
 

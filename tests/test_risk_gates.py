@@ -160,12 +160,12 @@ def test_is_market_hours_boundaries(when, expected):
     assert is_market_hours(when) is expected
 
 
-def _position(symbol="SPY", unrealized_plpc=0.0, qty=2.0) -> dict:
+def _position(symbol="SPY", unrealized_plpc=0.0, qty=2.0, side="long") -> dict:
     # qty defaults to 2 (not Sentinel Gate's real 1-contract-per-leg norm)
     # so existing partial-take-profit tests exercise the "fires" path;
     # the qty=1 case (which can never satisfy a 50% partial close) has
     # its own dedicated test below.
-    return {"symbol": symbol, "unrealized_plpc": unrealized_plpc, "qty": qty}
+    return {"symbol": symbol, "unrealized_plpc": unrealized_plpc, "qty": qty, "side": side}
 
 
 def test_no_protective_exit_within_thresholds():
@@ -269,3 +269,54 @@ def test_partial_take_profit_handles_missing_qty():
     config = base_config()
     positions = [{"symbol": "SPY", "unrealized_plpc": 60.0}]  # no qty key
     assert find_partial_take_profits(positions, config, already_triggered=set()) == []
+
+
+def test_protective_exit_closes_whole_spread_not_just_breaching_leg():
+    """The core scenario this exists for, confirmed live: closing only one
+    leg of a multi-leg spread can leave the other leg as an accidentally
+    uncovered/naked position. A stop-loss on one leg of a two-leg AAPL
+    spread must close BOTH legs, not just the one that breached."""
+    config = base_config()
+    positions = [
+        _position("AAPL260918C00200000", unrealized_plpc=-60.0, side="long"),
+        _position("AAPL260918C00210000", unrealized_plpc=10.0, side="short"),
+    ]
+    exits = find_protective_exits(positions, config)
+    assert {e.symbol for e in exits} == {"AAPL260918C00200000", "AAPL260918C00210000"}
+
+
+def test_protective_exit_closes_short_leg_before_long_leg():
+    """Closing the short leg first (buying it back) never creates naked
+    exposure at any intermediate step, even though these are separate,
+    non-atomic API calls -- closing the long leg first would momentarily
+    leave the short leg naked."""
+    config = base_config()
+    positions = [
+        _position("AAPL260918C00200000", unrealized_plpc=10.0, side="long"),
+        _position("AAPL260918C00210000", unrealized_plpc=-60.0, side="short"),
+    ]
+    exits = find_protective_exits(positions, config)
+    assert [e.symbol for e in exits] == ["AAPL260918C00210000", "AAPL260918C00200000"]
+
+
+def test_protective_exit_only_affects_breaching_underlying():
+    """A breach on one underlying's spread must not touch an unrelated
+    underlying's healthy position."""
+    config = base_config()
+    positions = [
+        _position("AAPL260918C00200000", unrealized_plpc=-60.0, side="long"),
+        _position("AAPL260918C00210000", unrealized_plpc=10.0, side="short"),
+        _position("MSFT260918C00300000", unrealized_plpc=5.0, side="long"),
+    ]
+    exits = find_protective_exits(positions, config)
+    assert {e.symbol for e in exits} == {"AAPL260918C00200000", "AAPL260918C00210000"}
+
+
+def test_protective_exit_single_leg_position_still_works():
+    """Single-leg strategies (long_call, long_put, covered_call,
+    cash_secured_put) have no pairing risk -- must still trigger normally,
+    not regress just because grouping logic was added."""
+    config = base_config()
+    positions = [_position("SPY260918C00450000", unrealized_plpc=-55.0, side="long")]
+    exits = find_protective_exits(positions, config)
+    assert [e.symbol for e in exits] == ["SPY260918C00450000"]

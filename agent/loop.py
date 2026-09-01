@@ -35,9 +35,10 @@ from agent.risk_gates import (
 
 COOLDOWN_PATH = Path(__file__).resolve().parent.parent / "state" / "cooldowns.json"
 PARTIAL_TP_STATE_PATH = Path(__file__).resolve().parent.parent / "state" / "partial_tp_triggered.json"
+FAILED_EXITS_STATE_PATH = Path(__file__).resolve().parent.parent / "state" / "failed_exits.json"
 
 
-def _load_partial_tp_triggered(path: Path = PARTIAL_TP_STATE_PATH) -> set[str]:
+def _load_symbol_set(path: Path) -> set[str]:
     if not path.exists():
         return set()
     try:
@@ -46,9 +47,9 @@ def _load_partial_tp_triggered(path: Path = PARTIAL_TP_STATE_PATH) -> set[str]:
         return set()
 
 
-def _save_partial_tp_triggered(triggered: set[str], path: Path = PARTIAL_TP_STATE_PATH) -> None:
+def _save_symbol_set(symbols: set[str], path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(sorted(triggered)))
+    path.write_text(json.dumps(sorted(symbols)))
 
 
 def _watchlist() -> list[str]:
@@ -67,17 +68,26 @@ def _close_protective_exits_sync(account: AccountState, positions: list[dict]) -
     never awaited directly, so it doesn't block the other concurrent loop.
 
     Full stop-loss/take-profit exits are checked first (unconditional,
-    every poll); partial take-profits are checked second and only for
-    symbols that haven't already had that tier fire, using persisted state
-    so the same tier doesn't re-trigger every poll against the remaining
-    runner shares after a partial close."""
+    every poll, except symbols that already failed a close attempt this
+    position's lifetime -- see `failed` below); partial take-profits are
+    checked second and only for symbols that haven't already had that tier
+    fire, using persisted state so neither re-triggers every poll."""
     config = RiskConfig.from_env()
-    triggered = _load_partial_tp_triggered()
+    triggered = _load_symbol_set(PARTIAL_TP_STATE_PATH)
+    failed = _load_symbol_set(FAILED_EXITS_STATE_PATH)
     open_symbols = {p["symbol"] for p in positions}
     decisions = []
 
     full_exits = find_protective_exits(positions, config)
     for finding in full_exits:
+        if finding.symbol in failed:
+            # Already failed once this position's lifetime (e.g. Alpaca
+            # rejected it) -- don't retry every 15s forever. Confirmed
+            # live: exactly this happened for 5+ consecutive polls before
+            # this backoff existed. The next reasoning cycle (which closes
+            # multi-leg positions correctly, per Claude's own judgment)
+            # gets a chance instead.
+            continue
         record = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "symbol": finding.symbol,
@@ -95,6 +105,7 @@ def _close_protective_exits_sync(account: AccountState, positions: list[dict]) -
         except Exception as exc:  # broad on purpose -- every attempt must be logged, no exceptions
             record["gate_allowed"] = False
             record["gate_reason"] = f"{finding.reason}, but close failed: {exc}"
+            failed.add(finding.symbol)
             print(f"[protective exit] {finding.symbol}: close FAILED -- {exc}")
         decisions.append(record)
 
@@ -123,9 +134,12 @@ def _close_protective_exits_sync(account: AccountState, positions: list[dict]) -
 
     # Prune symbols no longer open (fully closed by any path since) so a
     # future position on the same symbol isn't wrongly treated as already
-    # having had its partial tier fire.
+    # having had its partial tier fire, or blocked by a stale failed-close
+    # backoff from a position that's since been closed some other way.
     triggered &= open_symbols
-    _save_partial_tp_triggered(triggered)
+    failed &= open_symbols
+    _save_symbol_set(triggered, PARTIAL_TP_STATE_PATH)
+    _save_symbol_set(failed, FAILED_EXITS_STATE_PATH)
 
     if decisions:
         log_auto_close(account, decisions)
