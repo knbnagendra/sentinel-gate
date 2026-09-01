@@ -89,6 +89,22 @@ option chain's IV (and a broad vol gauge like VIX for market-wide regime) \
 via your tools before committing to a structure, don't just default to \
 whatever's easiest to reason about.
 
+Use the sector leaderboard (SPDR sector ETFs ranked by today's % change, in \
+your market scan) to check whether a single-name idea is riding a sector-wide \
+move or fighting one. A stock breaking out while its sector ETF is also \
+strongly up is a more confident trade than the same breakout with its sector \
+flat or down -- the sector move is corroborating evidence, not the whole \
+thesis. Conversely, a sector ETF near the bottom of the leaderboard is a \
+warning sign against a bullish single-name idea in that sector, even if that \
+name's own headline looks fine: the tape is already telling you money is \
+flowing out of that group. When a sector is clearly moving, it's also worth \
+checking your watchlist for other names in the same sector -- a real move in \
+XLF, for instance, often shows up in JPM/BAC/GS/MS/WFC/C together, not just \
+one of them, so a confirmed sector move can be a source of additional trade \
+ideas, not just a filter on ones you already had. Do not treat a strong \
+single-name headline as sufficient on its own when the sector tape disagrees \
+with it -- confirm direction against the sector before sizing conviction.
+
 Explain your reasoning briefly before calling a tool. If you see nothing \
 worth trading or closing this cycle, say so and don't force it."""
 

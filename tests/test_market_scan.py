@@ -76,6 +76,43 @@ def test_build_market_scan_handles_no_news():
     assert "(no recent news)" in scan
 
 
+def test_build_market_scan_sector_leaderboard_ranks_strongest_first():
+    mock_data_client = MagicMock()
+    mock_data_client.get_stock_snapshot.return_value = {
+        "XLF": _snapshot(close=50.0, prev_close=49.0),  # +2.04%
+        "XLE": _snapshot(close=80.0, prev_close=82.0),  # -2.44%
+        "XLK": _snapshot(close=200.0, prev_close=196.0),  # +2.04% (tie, alphabetical after XLF by symbol)
+    }
+
+    with (
+        patch("agent.market_scan._data_client", return_value=mock_data_client),
+        patch("agent.market_scan._news_client", return_value=MagicMock()),
+        patch("agent.market_scan._screener_client", return_value=MagicMock()),
+    ):
+        scan = build_market_scan(["XLF", "XLE", "XLK"])
+
+    leaderboard = scan.split("Watchlist snapshot")[0]
+    xle_pos = leaderboard.index("XLE")
+    xlf_pos = leaderboard.index("XLF")
+    assert xle_pos > xlf_pos  # XLE (-2.44%) ranked after the positive movers
+
+
+def test_build_market_scan_sector_leaderboard_skips_missing_etfs():
+    mock_data_client = MagicMock()
+    mock_data_client.get_stock_snapshot.return_value = {
+        "SPY": _snapshot(close=450.0, prev_close=445.0),
+    }
+
+    with (
+        patch("agent.market_scan._data_client", return_value=mock_data_client),
+        patch("agent.market_scan._news_client", return_value=MagicMock()),
+        patch("agent.market_scan._screener_client", return_value=MagicMock()),
+    ):
+        scan = build_market_scan(["SPY"])
+
+    assert "(no sector ETF data)" in scan
+
+
 def test_build_market_scan_section_failure_is_isolated():
     """One section failing (e.g. news API hiccup) must not take down the
     others -- this is best-effort context, not a gated risk check."""

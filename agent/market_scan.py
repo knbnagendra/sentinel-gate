@@ -42,21 +42,61 @@ def _screener_client() -> ScreenerClient:
     )
 
 
-def _format_snapshots(watchlist: list[str]) -> str:
-    snapshots = _data_client().get_stock_snapshot(
-        StockSnapshotRequest(symbol_or_symbols=watchlist)
-    )
+# SPDR sector ETFs that appear in the default watchlist -- used to build a
+# sector-momentum leaderboard from the same snapshot fetch as the per-symbol
+# quotes, no extra API call. Real estate (XLRE) is deliberately not in the
+# default watchlist, so it's omitted here too.
+SECTOR_ETFS = {
+    "XLK": "Technology",
+    "XLF": "Financials",
+    "XLV": "Health Care",
+    "XLY": "Consumer Discretionary",
+    "XLP": "Consumer Staples",
+    "XLE": "Energy",
+    "XLI": "Industrials",
+    "XLU": "Utilities",
+    "XLB": "Materials",
+    "XLC": "Communication Services",
+}
+
+
+def _pct_change(snap) -> float | None:
+    if snap is None or snap.daily_bar is None:
+        return None
+    prev_close = snap.previous_daily_bar.close if snap.previous_daily_bar else None
+    if not prev_close:
+        return None
+    return (snap.daily_bar.close - prev_close) / prev_close * 100
+
+
+def _format_snapshots(watchlist: list[str], snapshots) -> str:
     lines = []
     for symbol in watchlist:
         snap = snapshots.get(symbol)
         if snap is None or snap.daily_bar is None:
             lines.append(f"  {symbol}: no data")
             continue
-        close = snap.daily_bar.close
-        prev_close = snap.previous_daily_bar.close if snap.previous_daily_bar else None
-        pct_str = f"{(close - prev_close) / prev_close * 100:+.2f}%" if prev_close else "N/A"
-        lines.append(f"  {symbol}: ${close:.2f} ({pct_str})")
+        pct = _pct_change(snap)
+        pct_str = f"{pct:+.2f}%" if pct is not None else "N/A"
+        lines.append(f"  {symbol}: ${snap.daily_bar.close:.2f} ({pct_str})")
     return "\n".join(lines)
+
+
+def _format_sector_leaderboard(snapshots) -> str:
+    """Ranks the SPDR sector ETFs by today's % change, strongest to weakest,
+    so Claude can spot sector-wide moves directly instead of having to infer
+    them from individual tickers scattered through the flat watchlist list.
+    Best-effort: a sector ETF missing from the watchlist/snapshot is just
+    skipped, not an error -- this is a convenience ranking, not a gate."""
+    ranked = []
+    for symbol, name in SECTOR_ETFS.items():
+        pct = _pct_change(snapshots.get(symbol))
+        if pct is not None:
+            ranked.append((pct, symbol, name))
+    if not ranked:
+        return "  (no sector ETF data)"
+    ranked.sort(reverse=True)
+    return "\n".join(f"  {i}. {sym} ({name}): {pct:+.2f}%" for i, (pct, sym, name) in enumerate(ranked, 1))
 
 
 def _format_news(watchlist: list[str], limit: int = 40, lookback_hours: int = 24) -> str:
@@ -94,9 +134,14 @@ def build_market_scan(watchlist: list[str]) -> str:
     independently (a broken news call shouldn't take down snapshots too)
     since this is best-effort context, not a gated risk check."""
     try:
-        snapshots_text = _format_snapshots(watchlist)
+        snapshots = _data_client().get_stock_snapshot(
+            StockSnapshotRequest(symbol_or_symbols=watchlist)
+        )
+        snapshots_text = _format_snapshots(watchlist, snapshots)
+        sector_text = _format_sector_leaderboard(snapshots)
     except Exception as exc:
         snapshots_text = f"  (snapshot fetch failed: {exc})"
+        sector_text = f"  (sector leaderboard unavailable: {exc})"
 
     try:
         news_text = _format_news(watchlist)
@@ -109,6 +154,9 @@ def build_market_scan(watchlist: list[str]) -> str:
         movers_text = f"  (movers fetch failed: {exc})"
 
     return (
+        "Sector leaderboard (SPDR sector ETFs, ranked by today's % change, "
+        "strongest to weakest):\n"
+        f"{sector_text}\n\n"
         "Watchlist snapshot (price, % change from prior close):\n"
         f"{snapshots_text}\n\n"
         "Recent news (last 24h, watchlist symbols):\n"
