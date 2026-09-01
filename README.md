@@ -7,17 +7,19 @@ Agents Hackathon](https://lablab.ai/ai-hackathons/alpaca-ai-trading-agents-hacka
 Claude reasons live each cycle over market data pulled through Alpaca's
 official MCP server, then proposes trades through a single custom tool,
 `propose_trade`. That tool is the *only* way a trade can happen -- every
-proposal runs through code-enforced risk gates (daily circuit breaker,
-per-symbol cooldown, position sizing cap, market-hours check, and a hard
-block on undefined-risk strategies) before anything reaches Alpaca's Trading
-API. The gates aren't a suggestion in a system prompt; they're checked in
-code, on every call, with no path around them.
+proposal runs through code-enforced risk gates (market-hours check,
+defined-risk-only allowlist, position sizing cap, per-symbol cooldown, and a
+code-only stop-loss/take-profit loop that runs independent of Claude) before
+anything reaches Alpaca's Trading API. The gates aren't a suggestion in a
+system prompt; they're checked in code, on every call, with no path around
+them. There is deliberately no daily loss circuit breaker -- see
+[WRITEUP.md](WRITEUP.md) for why.
 
 ## Architecture
 
 ```
 agent/
-  risk_gates.py   circuit breaker, cooldowns, position cap, undefined-risk block
+  risk_gates.py   cooldowns, position cap, undefined-risk block, protective stop-loss/take-profit
   context.py      live account/position snapshot via alpaca-py
   brain.py        Claude reasoning turn: Alpaca MCP tools (read-only) + propose_trade
   execute.py      places the order via alpaca-py, after gates pass
@@ -26,8 +28,11 @@ agent/
 dashboard/
   app.py          read-only Streamlit dashboard: positions, P&L, decision feed
 tests/
-  test_risk_gates.py   16 tests -- the safety-critical layer, proven before anything trades
-  test_execute.py      17 tests -- leg/strategy validation and covered/secured checks
+  test_risk_gates.py   safety-critical gate + protective-exit layer, proven before anything trades
+  test_execute.py      leg/strategy validation and covered/secured checks
+  test_log_store.py    logging + usage-tracking layer
+  test_market_scan.py  pre-fetched market data formatting
+  (75 tests total across the suite -- `pytest tests/`)
 ```
 
 ## Setup
@@ -46,3 +51,10 @@ pytest tests/                                       # verify the risk gates firs
 python -m agent.loop                                # the trading loop
 streamlit run dashboard/app.py --server.port 8501   # the dashboard, separately
 ```
+
+## Disclosure
+
+The judging paper account (`PA3YL75LTR3W`) was created 2026-08-26 and began
+live trading Friday, Aug 28 at 9:30am ET, once the hackathon window opened.
+All code, prompts, and risk-gate logic in this repo were written during the
+competition window; no pre-existing trading strategy or model was reused.

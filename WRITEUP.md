@@ -42,8 +42,25 @@ symbols, and a calculated `max_loss` before the gates even look at it. A
 rejection is designed to read as "try something else," not "retry the same
 thing" -- cooldowns and caps don't lift because Claude asks twice.
 
-*TODO near deadline: 2-3 real examples from the decision log of strategy
-choice reacting to changing conditions over the week.*
+Real examples from the decision log of strategy choice reacting to changing
+conditions (`state/cycles.jsonl`):
+
+- **Anticipatory de-risking**: opened a `PANW` iron condor on 8/28, then on
+  8/31 closed it early -- "de-risking iron condor ahead of PANW earnings
+  (Sept 1) with expiration Sept 4 ... to cap risk before binary catalyst" --
+  and reopened a fresh iron condor the same day once the position was flat.
+  Not a stop-loss or take-profit trigger; a judgment call about upcoming
+  binary event risk that neither code gate covers.
+- **Thesis invalidation, not just P&L**: an `MSTR` bull put credit spread was
+  closed on 8/28 with reasoning "thesis invalidated: MSTR down ~8% on
+  dilutive $2B capital [raise]" -- exited on the *reason* the position
+  existed breaking, independent of whether the stop-loss threshold had been
+  hit yet.
+- **Catalyst-driven profit-take below the code threshold**: an `XOM` long
+  call was closed on 9/1 at "+49.5% gain on oil-geopolitical spike (Strait of
+  Hormuz headlines); locking in profit" -- well under the +100%
+  code-enforced take-profit level, because Claude judged the move was a
+  news spike unlikely to hold, not a sustained trend.
 
 ## Risk gates
 
@@ -89,8 +106,23 @@ per-trade size cap) stay in place regardless; this is specifically about not
 stopping the agent from continuing to trade, not about loosening what counts
 as a safe trade.
 
-*TODO near deadline: a real example of each gate actually firing, pulled from
-`state/cycles.jsonl`.*
+Real examples from `state/cycles.jsonl` of gates actually firing:
+
+- **Max concurrent positions** blocked new entries twice on 8/28 (`MSTR`,
+  `QQQ`) when the account hit the then-current cap of 6/6 open positions --
+  proposals that otherwise passed every other gate were still rejected.
+- **Code-enforced stop-loss** closed a `PANW` iron condor on 8/28 when "loss
+  already ~2.2x credit collected amid elevated post-earnings IV" breached the
+  -50% threshold, independent of the reasoning cycle noticing.
+- The **defined-risk allowlist**, **max_loss sanity check**, **position
+  sizing cap**, **market-hours check**, and **per-symbol cooldown** did not
+  reject any live proposal over the week -- every trade Claude proposed
+  already stayed inside those bounds. Their correctness is proven by the
+  75-test unit suite (`tests/test_risk_gates.py`) instead, which exercises
+  each one directly (oversized `max_loss`, out-of-hours timestamps, an
+  unrecognized strategy name, a symbol/strategy pair inside its cooldown
+  window, etc.) rather than waiting for a live proposal to happen to violate
+  one.
 
 ## Alpaca infrastructure
 
