@@ -164,6 +164,14 @@ def evaluate_trade(
     if proposal.max_loss is None or proposal.max_loss <= 0:
         return RiskDecision(False, "max_loss must be a known, positive, finite dollar amount")
 
+    # open_positions_count is distinct underlyings (trades), not raw option
+    # legs -- context.py groups via underlying_of() before counting. Counting
+    # legs directly would silently starve trade volume: a single iron condor
+    # (4 legs) or vertical spread (2 legs) would eat 4x/2x its intended share
+    # of the cap, working directly against the "maximize trade volume" goal
+    # this cap's generous default (20) was set for. Confirmed live 2026-09-01:
+    # 21 raw legs across only 7 distinct underlyings had already blocked every
+    # new trade for the rest of the session under the old leg-counting logic.
     if account.open_positions_count >= config.max_concurrent_positions:
         return RiskDecision(
             False,
@@ -198,10 +206,12 @@ class ProtectiveExit:
 _OCC_RE = re.compile(r"^([A-Z]+)\d{6}[CP]\d{8}$")
 
 
-def _underlying_of(symbol: str) -> str:
+def underlying_of(symbol: str) -> str:
     """Best-effort: strip the OCC option suffix to recover the underlying
     ticker, so multi-leg positions sharing an underlying can be grouped and
-    closed together instead of one leg at a time."""
+    closed together instead of one leg at a time. Also used by context.py to
+    count *trades* (distinct underlyings) rather than raw option legs for
+    max_concurrent_positions -- see that gate's check below for why."""
     match = _OCC_RE.match(symbol)
     return match.group(1) if match else symbol
 
@@ -228,7 +238,7 @@ def find_protective_exits(positions: list[dict], config: RiskConfig) -> list[Pro
     """
     groups: dict[str, list[dict]] = {}
     for position in positions:
-        groups.setdefault(_underlying_of(position["symbol"]), []).append(position)
+        groups.setdefault(underlying_of(position["symbol"]), []).append(position)
 
     exits = []
     for legs in groups.values():

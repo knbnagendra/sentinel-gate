@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import GetPortfolioHistoryRequest
 
-from agent.risk_gates import AccountState
+from agent.risk_gates import AccountState, underlying_of
 
 
 def _trading_client() -> TradingClient:
@@ -34,10 +34,17 @@ def get_account_state() -> AccountState:
     last_equity = float(account.last_equity)
     daily_pnl_pct = ((equity - last_equity) / last_equity) * 100 if last_equity else 0.0
 
+    # Count distinct trades (underlyings), not raw option legs -- a single
+    # vertical spread or iron condor is one bet, not 2-4. len(positions)
+    # here would let multi-leg strategies eat a disproportionate share of
+    # max_concurrent_positions and starve trade volume for no reason; see
+    # the gate's own comment in risk_gates.py::evaluate_trade.
+    distinct_trades = {underlying_of(p.symbol) for p in positions}
+
     return AccountState(
         equity=equity,
         daily_pnl_pct=daily_pnl_pct,
-        open_positions_count=len(positions),
+        open_positions_count=len(distinct_trades),
     )
 
 
