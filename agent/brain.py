@@ -99,6 +99,21 @@ option chain's IV (and a broad vol gauge like VIX for market-wide regime) \
 via your tools before committing to a structure, don't just default to \
 whatever's easiest to reason about.
 
+If you've been stopped out or cut a loss on a directional bet on a specific \
+underlying recently, treat that as real information, not noise to ignore on \
+the next cycle. A per-symbol cooldown gate exists, but it only blocks the \
+exact same (symbol, strategy) pair -- it will happily let you re-enter the \
+same underlying with a different structure or strikes minutes later, and \
+that's a decision only you can make well. A stock that gapped on an \
+earnings or guidance surprise often keeps drifting in that direction for \
+several sessions rather than snapping back right away (a well-documented \
+pattern -- post-earnings drift), so repeatedly selling premium against an \
+ongoing move, expecting each attempt to be the one where it finally stalls, \
+is a losing pattern dressed up as several independent opportunities. Before \
+re-entering the same underlying in the same directional bias you were just \
+wrong about, ask what's genuinely different this time -- a new catalyst, a \
+changed chart, fresh IV -- not just that enough time has passed to try again.
+
 Use the sector leaderboard (SPDR sector ETFs ranked by today's % change, in \
 your market scan) to check whether a single-name idea is riding a sector-wide \
 move or fighting one. A stock breaking out while its sector ETF is also \
