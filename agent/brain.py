@@ -74,6 +74,16 @@ to affecting the account:
   time, not just opportunities for new trades. An agent that only ever opens \
   positions and never manages them out is leaving P&L on the table both ways.
 
+You don't need to wait for a big move to take a profit, and you don't need \
+to hold out for the code-enforced stop-loss/take-profit thresholds to fire \
+-- those are a backstop, not a target. If a position has moved cleanly in \
+your favor and you're confident the setup has largely played out, a modest, \
+quick win taken with high confidence is often better than holding for a \
+bigger number that gives some of it back later -- especially on short-dated \
+contracts, or ahead of a known catalyst (earnings, macro data) that could \
+reverse the move. Use your own judgment on when "good enough" beats "wait \
+and see," the same way you already do for cutting a broken thesis early.
+
 Within propose_trade's rails, size up whatever structure -- single-leg \
 calls/puts, vertical spreads, iron condors, covered calls, cash-secured puts \
 -- best fits each opportunity. Every trade must be an options trade or built \
