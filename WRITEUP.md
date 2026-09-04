@@ -147,4 +147,41 @@ lets Claude place an order except by going through that gate.
 
 ## Results
 
-TODO: final P&L, notable trades, what worked, what didn't.
+*Final -- EOD Thursday Sep 3, 2026, the competition's official scoring snapshot.*
+
+Starting equity: $100,000 (account created Aug 26, trading began Aug 28 -- see
+Disclosure in [README.md](README.md)). Final equity: **$92,824.51**, down
+**-$7,175.49 (-7.18%)** cumulative. Day-by-day: Aug 29 -0.54%, Sep 1 -1.75%,
+Sep 2 -2.00%, Sep 3 -1.87%. 71 trades opened across the week, spanning
+verticals, iron condors, single-leg calls/puts, and covered structures.
+
+**What worked:**
+- **Catalyst-aware exits below the code threshold** -- an `XOM` long call
+  closed +49.5% on a geopolitical spike (Strait of Hormuz headlines), and an
+  `NVDA` long put closed +56.67% ahead of an upcoming catalyst Claude judged
+  "now a coin-flip" -- both taken well under the +100% code-enforced
+  take-profit, on Claude's own read that the move likely wouldn't hold or the
+  edge had disappeared.
+- **Thesis-invalidation discipline** -- `MSTR` and `SHOP` credit spreads were
+  cut fast when the fundamental reason for the trade broke (a dilutive
+  capital raise, a broken bullish thesis on a down day), not held waiting for
+  the -50% code stop-loss to eventually catch up.
+
+**What didn't:**
+- **PANW, repeatedly** -- the single largest loss driver of the week.
+  Bullish-tilted PANW put credit spreads were opened and re-opened through
+  Sep 1 while PANW was actively falling ~6% on bad news amid a broader
+  risk-off day; each got cut at a loss as the stock kept moving the wrong
+  way. This was the direct motivation for the sector-leaderboard prompt
+  update shipped that evening (see AI logic) -- sector-wide context might
+  have flagged the tape disagreeing with the single-name thesis before entry.
+
+**Infrastructure reliability:** two live production incidents were caught and
+fixed same-day with no extended downtime -- an upstream `fastmcp` 4.0.0
+breaking release (Sep 1 morning) and a multi-leg naked-position/retry-storm
+risk in the protective stop-loss loop (Sep 1 midday). A separate
+position-counting bug (raw option legs counted instead of distinct trades,
+silently capping real trade volume at a fraction of the intended limit) was
+found and fixed Sep 1 evening -- all three are detailed in the project's
+internal history and reflected in the current `agent/risk_gates.py` and
+`agent/context.py`.
